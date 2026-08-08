@@ -1,0 +1,137 @@
+classDiagram
+    class Holding {
+        +number id
+        +number|null user_id
+        +string|null code
+        +string name
+        +string asset_class  // stock|fund|cash|bond|other
+        +number quantity
+        +number cost_price
+        +number current_price
+        +number market_value
+        +number cost_amount
+        +number profit
+        +number profit_rate  // %
+        +number current_pct  // 当前占比
+        +number target_pct
+        +number deviation_pct
+        +number deviation_ratio
+    }
+    class PortfolioSummary {
+        +number total_asset
+        +number total_cost
+        +number total_profit
+        +number total_profit_rate
+        +number day_profit
+        +number holding_count
+        +array~Holding~ holdings
+        +array~AllocationItem~ allocation
+        +string as_of
+        +object concentration  // cr3, hhi, industry_map
+    }
+    class AllocationItem {
+        +string dimension
+        +string key
+        +number current_pct
+        +number target_pct
+        +number deviation_pct
+    }
+    class RebalanceSuggestion {
+        +string action  // BUY|SELL|HOLD
+        +string code
+        +string name
+        +number target_value
+        +number diff_value
+        +number suggest_shares
+        +number suggest_amount
+        +number current_pct
+        +number target_pct
+        +string unit  // 股/份/元
+    }
+    class ScreenerCondition {
+        +string type  // morning|closing|pipeline_morning|pipeline_closing
+        +object universe  // 通用过滤
+        +object filters   // 指标条件
+        +array~PipelineStepConfig~ steps  // 五步法/七步法
+        +boolean loose_mode
+    }
+    class PipelineStepConfig {
+        +string id
+        +string label
+        +boolean enabled
+        +object params  // 阈值等
+    }
+    class PipelineFunnelStep {
+        +string step_id
+        +string label
+        +number survivors
+        +number eliminated
+        +array~ReasonCount~ top_reasons
+    }
+    class ReasonCount {
+        +string reason
+        +number count
+    }
+    class ScreenerResult {
+        +number rank
+        +string code
+        +string name
+        +number price
+        +number pct_chg
+        +number score
+        +ScoreDetail score_detail
+        +array~string~ hit_tags
+        +array~string~ hit_step_tags  // 命中的漏斗步骤标签
+        +object metrics  // 各因子原始值
+        +string data_origin
+    }
+    class ScoreDetail {
+        +number total
+        +array~FactorScore~ factors
+    }
+    class FactorScore {
+        +string key
+        +string label
+        +number score  // 0-100
+        +number weight
+        +number contribution
+        +string note  // 含「数据缺失」标注
+    }
+    class Strategy {
+        +number id
+        +number|null user_id
+        +string name
+        +string type
+        +ScreenerCondition conditions
+        +boolean is_preset
+        +string created_at
+        +string updated_at
+    }
+    class AiReport {
+        +number id
+        +string report_type
+        +string ref_key
+        +string trade_date
+        +string content
+        +boolean cached
+        +string generated_at
+    }
+    class DataProvider {
+        <<interface>>
+        +getQuote(code) Quote
+        +getQuotes(codes) Quote[]
+        +getDailyKline(code, n) Bar[]
+        +listSecurities(filter) Security[]
+        +getSectorInfo(code) SectorInfo
+        +getLatestSnapshot() Snapshot
+    }
+    class SqliteProvider
+    class HttpProvider
+    DataProvider <|.. SqliteProvider
+    DataProvider <|.. HttpProvider
+    PortfolioSummary "1" *-- "many" Holding
+    PortfolioSummary "1" *-- "many" AllocationItem
+    ScreenerResult "1" *-- "1" ScoreDetail
+    ScreenerResult "1" *-- "many" PipelineFunnelStep : funnel
+    ScoreDetail "1" *-- "many" FactorScore
+    Strategy "1" *-- "1" ScreenerCondition

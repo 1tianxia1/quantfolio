@@ -1,0 +1,91 @@
+sequenceDiagram
+    participant U as 浏览器
+    participant L as LoginPage
+    participant A as /api/auth/login
+    participant AS as authService
+    participant DB as users
+    participant M as /api/portfolio/summary
+    participant MW as auth中间件
+    U->>L: 输入账号密码
+    L->>A: POST {account,password}
+    A->>AS: login(account,password)
+    AS->>DB: SELECT user WHERE username/email
+    AS->>AS: bcrypt.compare(password, hash)
+    alt 校验失败
+        AS-->>A: 401 {code:40101, message:'账号或密码错误'}
+        A-->>L: 显示错误
+    else 成功
+        AS->>AS: jwt.sign({id,username}, JWT_SECRET, {expiresIn:'7d'})
+        AS-->>A: {token, user}
+        A-->>L: 保存 token+user → authStore(localStorage)
+        L->>M: GET /api/portfolio/summary (Authorization: Bearer token)
+        M->>MW: 校验 JWT
+        alt token 有效
+            MW->>M: req.user={id}
+            M-->>L: PortfolioSummary
+        else 过期/无效
+            MW-->>L: 401 → 前端清 token → 跳登录页(回跳原地址)
+        end
+    end
+
+sequenceDiagram
+    participant U as 浏览器
+    participant D as Dashboard
+    participant S as /api/portfolio/summary
+    participant PS as portfolioService
+    participant DP as SqliteProvider
+    participant R as /api/portfolio/rebalance
+    participant AI as /api/ai/diagnose
+    participant AR as aiReportService
+    participant GLM as 智谱GLM
+    U->>D: 打开仪表盘
+    D->>S: GET /api/portfolio/summary
+    S->>PS: buildSummary(userId)
+    PS->>DP: getQuotes(codes) → 最新收盘价
+    PS->>PS: market_value/cost/profit/profit_rate/day_profit
+    PS->>PS: current_pct / 偏离度 / CR3 / HHI / 行业分布
+    PS-->>D: PortfolioSummary
+    D->>R: POST /api/portfolio/rebalance {threshold}
+    R->>R: |deviation_pct|>=threshold → BUY/SELL, 100股向下取整
+    R-->>D: RebalanceSuggestion[] + 现金校验
+    D->>AI: POST /api/ai/diagnose {force_refresh:false}
+    AI->>AR: getCached(userId,'portfolio_diagnosis',snapshotHash,tradeDate)
+    alt 缓存命中
+        AR-->>D: {content, cached:true}
+    else 未命中
+        AR->>GLM: fetch(ZHIPU_BASE_URL, {model:'glm-4-flash', messages:prompt})
+        alt 成功
+            GLM-->>AR: markdown 小节(集中度/行业/风险/调仓建议)
+            AR->>DB: INSERT ai_reports
+            AR-->>D: {content, cached:false}
+        else 超时/失败
+            AR-->>D: 本地规则版兜底摘要 + 免责提示
+        end
+    end
+
+sequenceDiagram
+    participant U as 浏览器
+    participant C as ClosingScreen
+    participant P as /api/screener/pipeline/run
+    participant PS as pipelineService
+    participant TI as tech_indicators
+    participant SC as scoreService
+    participant AI as /api/ai/closing-interpret
+    participant GLM as 智谱GLM
+    U->>C: 加载「尾盘五步法（用户核心）」
+    C->>P: POST {type:'closing', steps:[5步阈值]}
+    P->>PS: runPipeline(steps)
+    loop 每步
+        PS->>TI: 查询最新交易日快照（涨幅/换手/市值/volume_streak/均线/60日空间）
+        PS->>PS: filter → survivors / eliminated + 淘汰原因统计
+    end
+    PS->>SC: score(通过全部步骤的标的, 'closing_pipeline')
+    PS-->>C: {funnel:[5步剩余数+淘汰Top原因], items:[ScreenerResult+命中步骤标签]}
+    C->>C: 漏斗可视化 + 结果表（上方60日空间%标灰提示）
+    C->>AI: POST /api/ai/closing-interpret {items:Top5, strategy_id}
+    AI->>AI: 按「用户+策略+交易日」查缓存
+    alt 未命中
+        AI->>GLM: 提示词(筛选逻辑摘要+Top5量化解释)
+        GLM-->>AI: markdown
+        AI-->>C: AiReport
+    end

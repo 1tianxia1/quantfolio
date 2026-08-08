@@ -1,0 +1,202 @@
+%% ============================================================
+%% 智能分析中心 时序图（程序调用流程）
+%% 配套文档：docs/architecture-analysis-center.md
+%% 架构师 高见远（Gao）· 2026-08-08
+%%
+%% 本文件含三张图，按顺序：
+%%   ① 模块 A 一次量化分析调用链
+%%   ② 模块 B 一次技术面信号调用链
+%%   ③ 流水线 选股→择时→回测 数据流
+%% 渲染时请分别复制单张 sequenceDiagram 块。
+%% ============================================================
+
+
+%% ---------- ① 模块 A：一次量化分析调用链 ----------
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant FP as FundamentalPanel
+    participant API as analysisRoutes
+    participant FA as FundamentalAnalysisService
+    participant AM as AnalysisModel
+    participant EP as EastmoneyProvider
+    participant IS as IndicatorService
+    participant WS as WebSearchService
+    participant ZS as ZhipuSearchProvider
+    participant EN as EmNewsProvider
+    participant RC as resolveAiConfig
+    participant AI as aiService.callLLM
+
+    U->>FP: 输入 code 000878，点「分析」
+    FP->>API: POST /api/analysis/fundamental {code}
+    API->>API: zod 校验 + normalizeCode + optionalAuth
+    API->>FA: analyze(userId, req)
+
+    FA->>AM: findReport(userId,'fundamental',code,today)
+    alt 命中当日缓存且非 force_refresh
+        AM-->>FA: cachedReport
+        FA-->>API: FundamentalReport (meta.cached=true)
+    else 需重新生成
+        FA->>RC: resolve(userAiConfigModel, userId)
+        RC-->>FA: {aiConfig, aiMeta, capabilities}
+        alt 登录用户未配置 Key
+            FA-->>API: throw 42402 AI 未配置
+        end
+
+        par 本地/行情取数
+            FA->>EP: getQuote(code)
+            EP-->>FA: Quote (data_origin=real)
+        and
+            FA->>EP: getDailyKline(code,120)
+            EP-->>FA: Bar[]
+        and
+            FA->>IS: getLatestSnapshot([code])
+            IS-->>FA: 指标 + 资金流 + 板块
+        end
+
+        FA->>WS: search(query, {freshnessDays, topK})
+        par 检索并联
+            WS->>ZS: query(q)  [仅 capabilities.webSearch]
+            ZS-->>WS: SearchResult[]
+        and
+            WS->>EN: byCode(code) 新闻/公告/研报
+            EN-->>WS: SearchResult[]
+        end
+        WS->>WS: 去重 → 解析 publishedAt → 排序 → 判定 stale
+        WS-->>FA: SearchBundle{results, retrievedAt, freshness}
+
+        alt 零结果 或 freshness.stale 全部超期
+            FA-->>API: throw 42401 情报时效不达标（不调用 LLM）
+        end
+
+        FA->>FA: contextBuilder.build(...) 生成带编号引用的 prompt
+        FA->>AI: callLLM(prompt, {aiConfig, temperature:0.3})
+        alt LLM 成功
+            AI-->>FA: JSON 文本
+            FA->>FA: jsonExtract 三级容错解析 + 字段校验
+        else LLM 失败/超时/非法 JSON
+            FA->>FA: degradedReport('ai_unavailable') 规则版摘要
+        end
+
+        FA->>AM: upsertReport(payload, model, searchProvider, retrievedAt)
+        FA-->>API: FundamentalReport
+    end
+
+    API-->>FP: ok(report)
+    FP->>FP: ConclusionCard + SourceList + StaleAlert 渲染
+    FP-->>U: 结论 / 置信度 / 逐条来源(链接+发布时间+检索时间)
+
+
+%% ---------- ② 模块 B：一次技术面信号调用链 ----------
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant TP as TechnicalPanel
+    participant API as analysisRoutes
+    participant TS as TechnicalSignalService
+    participant EP as EastmoneyProvider
+    participant QS as QuoteSyncService
+    participant IS as IndicatorService
+    participant SM as SecurityModel
+    participant SR as SignalRules
+    participant KC as KlineChart
+
+    U->>TP: 切到「B 策略指标」，code=600009
+    TP->>API: POST /api/analysis/technical {code, window:120}
+    API->>TS: analyze(req)
+
+    TS->>EP: getDailyKline(code, 120)
+    alt 东财成功
+        EP-->>TS: Bar[] (data_origin=real)
+        TS->>QS: syncKline(code) 异步落库
+        QS->>SM: upsert securities（解外键约束）
+        QS->>SM: upsert daily_quotes + 回算 tech_indicators
+    else 东财失败（限频/网络）
+        EP->>EP: 退避重试 3 次仍失败 → degrade()
+        EP-->>TS: sqliteProvider 本地 Bar[] (derived)
+    end
+
+    TS->>IS: getLatestSnapshot([code])
+    IS-->>TS: MA/MACD/RSI/KDJ/量能/命中标签
+    TS->>SM: getMoneyFlow([code])
+    SM-->>TS: main_net_inflow / net_inflow_3d / net_inflow_5d
+
+    TS->>TS: buildContext → SignalContext{bars, indicators, flow, cursor:last}
+    TS->>SR: evaluate(ctx)
+    Note over SR: 逐条纯函数规则<br/>macd_gold_cross / macd_dead_cross<br/>divergence_bottom / divergence_top<br/>trend_30d_up / trend_30d_down / trend_range<br/>volume_expand / volume_shrink<br/>main_inflow_5d
+    SR-->>TS: RuleHit[]
+    TS->>SR: compose(hits)
+    Note over SR: Σ(bullish·w) − Σ(bearish·w)<br/>≥ +60 → buy；≤ −60 → sell；否则 hold
+    SR-->>TS: Signal{action, strength, reasons}
+
+    TS->>TS: buildSeries(bars, macd, marks)
+    TS-->>API: TechnicalReport
+    API-->>TP: ok(report)
+    TP->>KC: KlineChart bars + macd + marks
+    KC-->>U: K线 + MACD 副图 + 买卖点打标
+    TP-->>U: SignalBadge + IndicatorTable 命中明细
+
+
+%% ---------- ③ 流水线：选股 → 择时 → 回测 数据流 ----------
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant PP as PipelinePanel
+    participant ST as analysisStore
+    participant API as analysisRoutes
+    participant PR as PipelineRunService
+    participant AM as AnalysisModel
+    participant FA as FundamentalAnalysisService
+    participant TSV as TechnicalSignalService
+    participant TM as TimingService
+
+    U->>PP: 在模块 A/B 结果页点「把当前标的送入流水线」
+    PP->>ST: setCandidate({code, from:'fundamental'|'technical', score})
+    PP->>API: POST /pipeline/runs {name, candidates}
+    API->>PR: createRun(userId, payload)
+    PR->>AM: insert pipeline_runs(context={candidates})
+    AM-->>PR: run{id, context}
+    PR-->>PP: PipelineRun
+
+    rect rgb(24,32,44)
+    Note over PP,PR: ① 选股 select（首版：手动指定，AI 仅分析 —— 见 O3）
+    U->>PP: 执行「①选股」
+    PP->>API: POST /runs/:id/steps/select/run {input:{codes}}
+    API->>PR: runStep(id,'select',input)
+    PR->>PR: project(context,'select') → 取 candidates
+    loop 每个候选 code
+        PR->>FA: analyze(userId,{code})
+        FA-->>PR: FundamentalReport.conclusion
+        PR->>TSV: analyze({code})
+        TSV-->>PR: TechnicalReport.signal
+    end
+    PR->>PR: merge → context.candidates[i] 补 score/stance/signal
+    PR->>AM: update pipeline_steps(output) + pipeline_runs(context)
+    PR-->>PP: PipelineStep{output:{candidates}}
+    end
+
+    rect rgb(24,32,44)
+    Note over PP,TM: ② 择时 timing（P1 仅 signal_follow；凯利/网格/马丁/右侧 → P2-2）
+    U->>PP: 执行「②择时」
+    PP->>API: POST /runs/:id/steps/timing/run {input:{template:'signal_follow'}}
+    API->>PR: runStep(id,'timing',input)
+    PR->>PR: project(context,'timing') → 取上游 candidates（含 signal）
+    PR->>TM: plan('signal_follow', candidates, params)
+    TM-->>PR: TimingPlan{entries:[{code,action,date,price,reason}]}
+    PR->>PR: merge → context.timing
+    PR->>AM: 持久化
+    PR-->>PP: PipelineStep{output:{timing}}
+    end
+
+    rect rgb(24,32,44)
+    Note over PP,PR: ③ 回测 backtest（P2-3 —— 见 O4；P1 返回 not_implemented 占位）
+    U->>PP: 执行「③回测」
+    PP->>API: POST /runs/:id/steps/backtest/run {input:{years:[2,5,10]}}
+    API->>PR: runStep(id,'backtest',input)
+    PR->>PR: project(context,'backtest') → 取 timing.entries
+    PR-->>PP: PipelineStep{status:'skipped', output:{status:'not_implemented'}}
+    Note right of PR: P2 落地时：<br/>getDailyKline(code, 2500) 取 10 年<br/>+ signalRules 逐根回放（同一套规则）<br/>→ 年化/最大回撤/胜率/达标判定
+    end
+
+    PP->>ST: setPipelineContext(context)
+    PP-->>U: StepContextCard 展示「上游产出 → 下游输入」的传递链路

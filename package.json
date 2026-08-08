@@ -1,0 +1,22 @@
+{
+  "name": "quantfolio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QuantFolio —— A股个人投资组合再平衡 + 早盘/尾盘智能选股一体化本地全栈平台",
+  "scripts": {
+    "postinstall": "node scripts/install-all.js",
+    "install-all": "node scripts/install-all.js",
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "seed": "npm run seed --prefix server",
+    "test": "npm test --prefix server",
+    "build": "npm run build --prefix client",
+    "start:server": "npm run start --prefix server",
+    "start:client": "npm run start --prefix client"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

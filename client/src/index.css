@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全局基础样式（preflight 已关闭，这里只做轻量补充） */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* 数值等宽（tabular-nums 兜底） */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 统一可点击元素的指针反馈 */
+button,
+a,
+[role='button'] {
+  cursor: pointer;
+}
+
+/* 长文本换行更友好 */
+.MuiTypography-root {
+  word-break: normal;
+}

@@ -1,0 +1,446 @@
+%% ============================================================
+%% 智能分析中心 类图（数据结构与接口）
+%% 配套文档：docs/architecture-analysis-center.md
+%% 架构师 高见远（Gao）· 2026-08-08
+%% ============================================================
+
+classDiagram
+    %% ========== 数据提供方层（P0-1 / P0-2）==========
+    class DataProvider {
+        <<interface>>
+        +String name
+        +getQuote(code) Quote
+        +getQuotes(codes) Quote[]
+        +getDailyKline(code, n) Bar[]
+        +listSecurities(filter) Security[]
+        +getSectorInfo(code) SectorInfo
+        +getLatestSnapshot() Snapshot
+    }
+
+    class SqliteProvider {
+        +String name
+        +getQuote(code) Quote
+        +getDailyKline(code, n) Bar[]
+    }
+
+    class EastmoneyProvider {
+        +String name
+        -EmClient client
+        -SqliteProvider fallback
+        -TtlCache cache
+        +getQuote(code) Quote
+        +getQuotes(codes) Quote[]
+        +getDailyKline(code, n) Bar[]
+        +listSecurities(filter) Security[]
+        +getSectorInfo(code) SectorInfo
+        +getLatestSnapshot() Snapshot
+        -degrade(method, err) any
+    }
+
+    class EmClient {
+        -RateLimiter limiter
+        -TtlCache cache
+        -Number timeoutMs
+        -Number maxRetry
+        +get(endpointKey, params, opts) Object
+        -buildHeaders() Object
+        -withRetry(fn) Promise
+        -stripJsonp(text) Object
+    }
+
+    class EmMapper {
+        <<utility>>
+        +toQuote(raw) Quote
+        +toBars(raw) Bar[]
+        +toSectorInfo(raw) SectorInfo
+        +toNewsItems(raw) NewsItem[]
+    }
+
+    class RateLimiter {
+        -Number qps
+        -Number maxConcurrency
+        -Map buckets
+        +acquire(key) Promise
+        +release(key) void
+    }
+
+    class TtlCache {
+        -Map store
+        -Number maxSize
+        +get(key) any
+        +set(key, val, ttlMs) void
+        +getOrLoad(key, ttlMs, loader) Promise
+    }
+
+    class CodeUtil {
+        <<utility>>
+        +normalizeCode(input) String
+        +marketFromCode(code, type) String
+        +toSecid(code, market) String
+        +isFundCode(code) Boolean
+    }
+
+    class QuoteSyncService {
+        -EastmoneyProvider provider
+        +syncKline(code, days) SyncResult
+        +ensureSecurity(quote) void
+        +recomputeIndicators(code) void
+    }
+
+    DataProvider <|.. SqliteProvider : implements
+    DataProvider <|.. EastmoneyProvider : implements
+    EastmoneyProvider *-- EmClient : owns
+    EastmoneyProvider ..> EmMapper : uses
+    EastmoneyProvider o-- SqliteProvider : degrades to
+    EmClient *-- RateLimiter : owns
+    EmClient *-- TtlCache : owns
+    EmClient ..> CodeUtil : uses
+    QuoteSyncService --> EastmoneyProvider : reads
+
+    %% ========== 联网检索层（P0-3）==========
+    class WebSearchService {
+        -SearchProvider[] providers
+        -Number freshnessDays
+        +search(query, opts) SearchBundle
+        -dedupe(results) SearchResult[]
+        -judgeFreshness(results) Freshness
+    }
+
+    class SearchProvider {
+        <<interface>>
+        +String id
+        +Boolean available
+        +query(q, opts) SearchResult[]
+    }
+
+    class ZhipuSearchProvider {
+        +String id
+        -String apiKey
+        -String baseUrl
+        +query(q, opts) SearchResult[]
+        +isAvailable(aiConfig) Boolean
+    }
+
+    class EmNewsProvider {
+        +String id
+        -EmClient client
+        +query(q, opts) SearchResult[]
+        +byCode(code, opts) SearchResult[]
+    }
+
+    class SearchResult {
+        +Number id
+        +String title
+        +String url
+        +String site
+        +String snippet
+        +String publishedAt
+        +String retrievedAt
+        +Boolean stale
+        +String providerId
+    }
+
+    class SearchBundle {
+        +SearchResult[] results
+        +String retrievedAt
+        +Freshness freshness
+        +String[] providersUsed
+        +String[] degradedChannels
+    }
+
+    class Freshness {
+        +Number newestDays
+        +Number thresholdDays
+        +Boolean stale
+    }
+
+    class ResolveAiConfig {
+        <<utility>>
+        +resolve(model, userId) AiResolution
+    }
+
+    class AiResolution {
+        +Boolean notConfigured
+        +Object aiConfig
+        +Object aiMeta
+        +Object capabilities
+    }
+
+    SearchProvider <|.. ZhipuSearchProvider : implements
+    SearchProvider <|.. EmNewsProvider : implements
+    WebSearchService o-- SearchProvider : orchestrates
+    WebSearchService ..> SearchBundle : produces
+    SearchBundle *-- SearchResult : contains
+    SearchBundle *-- Freshness : contains
+    ZhipuSearchProvider ..> ResolveAiConfig : reads key
+    ResolveAiConfig ..> AiResolution : produces
+    EmNewsProvider ..> EmClient : uses
+
+    %% ========== 模块 A 量化分析（P1-A）==========
+    class FundamentalAnalysisService {
+        -DataProvider provider
+        -WebSearchService search
+        -ContextBuilder builder
+        -AnalysisModel model
+        +analyze(userId, req) FundamentalReport
+        -gate(bundle) void
+        -degradedReport(reason, ctx) FundamentalReport
+    }
+
+    class ContextBuilder {
+        +build(code, quote, bars, indicators, flow, bundle) AnalysisContext
+        -numberBlock(snapshot) String
+        -citationBlock(results) String
+    }
+
+    class AnalysisContext {
+        +String code
+        +String name
+        +Object marketSnapshot
+        +Object indicatorSnapshot
+        +Object moneyFlow
+        +Object sector
+        +SearchResult[] citations
+        +String promptText
+    }
+
+    class FundamentalReport {
+        +String code
+        +String name
+        +String module
+        +String generatedAt
+        +String retrievedAt
+        +Freshness freshness
+        +Conclusion conclusion
+        +Dimension[] dimensions
+        +String[] risks
+        +SearchResult[] sources
+        +Object marketSnapshot
+        +ReportMeta meta
+    }
+
+    class Conclusion {
+        +String stance
+        +Number confidence
+        +String summary
+        +String horizon
+    }
+
+    class Dimension {
+        +String key
+        +String label
+        +Number score
+        +String verdict
+        +Number[] evidenceRefs
+    }
+
+    class ReportMeta {
+        +String model
+        +String aiProvider
+        +String searchProvider
+        +String dataOrigin
+        +Boolean degraded
+        +String degradeReason
+    }
+
+    FundamentalAnalysisService ..> ContextBuilder : uses
+    FundamentalAnalysisService ..> WebSearchService : queries
+    FundamentalAnalysisService ..> FundamentalReport : produces
+    ContextBuilder ..> AnalysisContext : produces
+    FundamentalReport *-- Conclusion
+    FundamentalReport *-- Dimension
+    FundamentalReport *-- ReportMeta
+    FundamentalReport *-- Freshness
+
+    %% ========== 模块 B 策略指标（P1-B）==========
+    class TechnicalSignalService {
+        -DataProvider provider
+        -IndicatorService indicators
+        -SecurityModel model
+        +analyze(req) TechnicalReport
+        -buildContext(code, window) SignalContext
+        -buildSeries(bars, inds, hits) ChartSeries
+    }
+
+    class SignalRules {
+        <<pure functions>>
+        +RULES RuleDef[]
+        +evaluate(ctx) RuleHit[]
+        +compose(hits) Signal
+    }
+
+    class RuleDef {
+        +String id
+        +String label
+        +String direction
+        +Number weight
+        +test(ctx) RuleHit
+    }
+
+    class SignalContext {
+        +String code
+        +Bar[] bars
+        +IndicatorRow[] indicators
+        +MoneyFlowRow[] flow
+        +Number cursor
+        +Object params
+    }
+
+    class RuleHit {
+        +String id
+        +String label
+        +Boolean hit
+        +Number value
+        +String direction
+        +Number weight
+        +String detail
+    }
+
+    class Signal {
+        +String action
+        +Number strength
+        +String[] reasons
+    }
+
+    class TechnicalReport {
+        +String code
+        +String name
+        +String asOf
+        +Signal signal
+        +RuleHit[] rules
+        +Regime regime
+        +Divergence divergence
+        +Object moneyFlow
+        +Object indicators
+        +ChartSeries series
+        +ReportMeta meta
+    }
+
+    class Regime {
+        +String trend30d
+        +Number slopePct
+        +Number rangePct
+        +String volume
+    }
+
+    class Divergence {
+        +Boolean top
+        +Boolean bottom
+        +String detail
+    }
+
+    class ChartSeries {
+        +Bar[] bars
+        +Object[] macd
+        +Object[] marks
+    }
+
+    TechnicalSignalService ..> SignalRules : calls
+    TechnicalSignalService ..> TechnicalReport : produces
+    SignalRules *-- RuleDef : registry
+    SignalRules ..> RuleHit : produces
+    SignalRules ..> Signal : composes
+    SignalRules ..> SignalContext : consumes
+    TechnicalReport *-- Signal
+    TechnicalReport *-- RuleHit
+    TechnicalReport *-- Regime
+    TechnicalReport *-- Divergence
+    TechnicalReport *-- ChartSeries
+    TechnicalReport *-- ReportMeta
+
+    %% ========== 流水线（P1-C）==========
+    class PipelineRunService {
+        -AnalysisModel model
+        -FundamentalAnalysisService fa
+        -TechnicalSignalService ts
+        -TimingService timing
+        +createRun(userId, payload) PipelineRun
+        +getRun(userId, id) PipelineRun
+        +runStep(userId, id, step, input) PipelineStep
+        -project(context, step) Object
+        -merge(context, step, output) PipelineContext
+    }
+
+    class PipelineRun {
+        +Number id
+        +Number userId
+        +String name
+        +String status
+        +PipelineContext context
+        +PipelineStep[] steps
+    }
+
+    class PipelineContext {
+        +Candidate[] candidates
+        +TimingPlan timing
+        +BacktestResult backtest
+        +String updatedAt
+    }
+
+    class Candidate {
+        +String code
+        +String name
+        +String from
+        +Number score
+        +String note
+    }
+
+    class TimingPlan {
+        +String template
+        +Entry[] entries
+        +Object params
+    }
+
+    class Entry {
+        +String code
+        +String action
+        +String date
+        +Number price
+        +String reason
+    }
+
+    class BacktestResult {
+        +Number[] years
+        +Object metrics
+        +Boolean pass
+        +String status
+    }
+
+    class PipelineStep {
+        +Number id
+        +Number runId
+        +String step
+        +Number seq
+        +String status
+        +Object input
+        +Object output
+    }
+
+    class TimingService {
+        +TEMPLATES Object
+        +plan(template, candidates, params) TimingPlan
+    }
+
+    class AnalysisModel {
+        +upsertReport(row) Object
+        +findReport(userId, module, code, date) Object
+        +listReports(filter) Object[]
+        +createRun(userId, payload) Object
+        +getRun(id) Object
+        +upsertStep(row) Object
+        +updateContext(runId, context) void
+    }
+
+    PipelineRunService ..> PipelineRun : manages
+    PipelineRunService ..> TimingService : uses
+    PipelineRunService ..> FundamentalAnalysisService : step select
+    PipelineRunService ..> TechnicalSignalService : step select
+    PipelineRunService --> AnalysisModel : persists
+    FundamentalAnalysisService --> AnalysisModel : caches
+    PipelineRun *-- PipelineContext
+    PipelineRun *-- PipelineStep
+    PipelineContext *-- Candidate
+    PipelineContext *-- TimingPlan
+    PipelineContext *-- BacktestResult
+    TimingPlan *-- Entry
+    TimingService ..> TimingPlan : produces

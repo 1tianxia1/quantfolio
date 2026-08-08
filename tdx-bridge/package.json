@@ -1,0 +1,10 @@
+{
+  "name": "quantfolio-tdx-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TDX real-time security resolver bridge for QuantFolio backend",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
