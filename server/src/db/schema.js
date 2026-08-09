@@ -1,9 +1,14 @@
 // ============================================================
-// 全部 DDL（16 张表）+ 种子元数据表初始化
-// 与 docs/DESIGN.md §3 一致
+// 全部 DDL（20 张表）+ 种子元数据表初始化
+// 与 docs/DESIGN.md §3 / docs/architecture-analysis-center.md §3.4 一致
+//
+// 1.1 → 1.2 变更：追加智能分析中心 3 张表
+//   analysis_reports / pipeline_runs / pipeline_steps
+// 全部 CREATE TABLE IF NOT EXISTS，initSchema 幂等 —— 存量库直接启动即可，
+// 无需 drop、无需迁移脚本。
 // ============================================================
 
-export const SCHEMA_VERSION = '1.1';
+export const SCHEMA_VERSION = '1.2';
 
 const DDL = `
 PRAGMA journal_mode=WAL;
@@ -263,6 +268,50 @@ CREATE TABLE IF NOT EXISTS user_ai_config (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- 18) 智能分析报告（模块 A/B 结果存档与同日缓存）
+--     刻意不给 code 设外键：允许分析本地 securities 尚未收录的代码（东财实时可查）
+CREATE TABLE IF NOT EXISTS analysis_reports (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER,
+  module          TEXT NOT NULL CHECK (module IN ('fundamental','technical')),
+  code            TEXT NOT NULL,
+  trade_date      TEXT NOT NULL,
+  payload         TEXT NOT NULL,
+  model           TEXT,
+  search_provider TEXT,
+  retrieved_at    TEXT,
+  data_origin     TEXT NOT NULL DEFAULT 'mixed' CHECK (data_origin IN ('real','derived','mixed')),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, module, code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_ar_code ON analysis_reports(code, created_at DESC);
+
+-- 19) 流水线运行（①选股 → ②择时 → ③回测 的数据总线）
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER,
+  name       TEXT,
+  status     TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','running','done','failed')),
+  context    TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 20) 流水线步骤
+CREATE TABLE IF NOT EXISTS pipeline_steps (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id     INTEGER NOT NULL,
+  step       TEXT NOT NULL CHECK (step IN ('select','timing','backtest')),
+  seq        INTEGER NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed','skipped')),
+  input      TEXT NOT NULL DEFAULT '{}',
+  output     TEXT NOT NULL DEFAULT '{}',
+  error      TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (run_id) REFERENCES pipeline_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ps_run ON pipeline_steps(run_id, seq);
 `;
 
 /**

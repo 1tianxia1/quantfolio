@@ -17,8 +17,14 @@ const holdingSchema = z.object({
   code: z.string().nullable().optional(),
   name: z.string().min(1, '名称不能为空'),
   asset_class: z.enum(Object.values(ASSET_CLASS), '资产类别不合法'),
-  quantity: z.number().min(0, '数量不能为负'),
-  cost_price: z.number().min(0).optional().default(0),
+  // D5：数值字段必须为有限数并设上界，防止 1e308 之类溢出污染汇总（total_asset -> null）
+  quantity: z.number().min(0, '数量不能为负').max(1e12, '数量超出允许范围').finite('数量必须是有限数值'),
+  cost_price: z.number().min(0).max(1e12, '成本价超出允许范围').finite('成本价必须是有限数值').optional().default(0),
+});
+
+// D4/D19：CSV 导入的 csv_text 必须是非空字符串；数字/对象/null/空串一律 400
+const importSchema = z.object({
+  csv_text: z.string().min(1, 'csv_text 不能为空'),
 });
 
 const targetSchema = z.object({
@@ -81,9 +87,9 @@ export function createPortfolioRoutes(db) {
   });
 
   // ---------- CSV 导入（模板：代码,名称,资产类别,数量,成本价） ----------
-  router.post('/holdings/import', optionalAuth, requireWrite, (req, res, next) => {
+  router.post('/holdings/import', optionalAuth, requireWrite, validateBody(importSchema), (req, res, next) => {
     try {
-      const csvText = req.body?.csv_text || '';
+      const csvText = req.validated.csv_text;
       const result = parseHoldingsCsv(csvText);
       let imported = 0;
       const errors = [];
@@ -179,6 +185,8 @@ export function createPortfolioRoutes(db) {
 const VALID_ASSET_CLASS = ['stock', 'fund', 'cash', 'bond', 'other'];
 
 function parseHoldingsCsv(text) {
+  // D4 防御层：即使绕过 zod 直接调用，也拒绝非字符串，避免 text.replace 崩溃
+  if (typeof text !== 'string') throw ApiError.badRequest('csv_text 必须是字符串');
   const lines = text
     .replace(/^\uFEFF/, '')
     .split(/\r?\n/)

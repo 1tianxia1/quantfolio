@@ -4,6 +4,7 @@
 import { createSecurityModel } from '../models/securityModel.js';
 import { createWatchlistModel } from '../models/watchlistModel.js';
 import { resolveSecurity } from './securityResolver.js';
+import { ApiError } from '../util/errors.js';
 
 /**
  * 市场服务工厂
@@ -89,7 +90,8 @@ export function createMarketService(db) {
 
     addWatchlist(userId, code) {
       const sec = model.findByCode(code);
-      if (!sec) throw Object.assign(new Error('证券不存在'), { httpStatus: 404, code: 40400 });
+      // D3：必须抛 ApiError 让 errorHandler 命中 404 分支；裸 Error 会落入未知错误 500
+      if (!sec) throw ApiError.notFound('证券不存在');
       return watchlist.add(userId, code);
     },
 

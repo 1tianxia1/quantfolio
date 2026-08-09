@@ -239,7 +239,7 @@ export default function MorningScreen() {
                 />
                 {pipeline && pipeline.items.length === 0 && (
                   <Alert severity="info" sx={{ mb: 1, fontSize: 12 }}>
-                    当前池中流通市值&lt;10亿的小盘股极少（种子数据限制）。可开启「宽松模式 &lt;30亿」或切换通用指标筛选。
+                    {pipeline.dataHint || '当前池中流通市值&lt;10亿的小盘股极少（种子数据限制）。可开启「宽松模式 &lt;30亿」或切换通用指标筛选。'}
                   </Alert>
                 )}
               </>

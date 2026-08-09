@@ -10,6 +10,7 @@ import ClosingScreen from './pages/ClosingScreen';
 import StrategiesPage from './pages/StrategiesPage';
 import WatchlistPage from './pages/WatchlistPage';
 import SettingsPage from './pages/SettingsPage';
+import AnalysisCenter from './pages/AnalysisCenter';
 import NotFound from './pages/NotFound';
 
 export default function App() {
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/closing" element={<ClosingScreen />} />
         <Route path="/strategies" element={<StrategiesPage />} />
         <Route path="/watchlist" element={<WatchlistPage />} />
+        <Route path="/analysis" element={<AnalysisCenter />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<NotFound />} />

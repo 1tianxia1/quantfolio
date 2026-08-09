@@ -5,6 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
 import { ok } from './util/response.js';
+import env from './config/env.js';
 
 import { createAuthRoutes } from './routes/authRoutes.js';
 import { createPortfolioRoutes } from './routes/portfolioRoutes.js';
@@ -12,6 +13,7 @@ import { createScreenerRoutes } from './routes/screenerRoutes.js';
 import { createStrategyRoutes } from './routes/strategyRoutes.js';
 import { createAiRoutes } from './routes/aiRoutes.js';
 import { createMarketRoutes } from './routes/marketRoutes.js';
+import { createAnalysisRoutes } from './routes/analysisRoutes.js';
 
 /**
  * 创建 Express 应用
@@ -20,7 +22,15 @@ import { createMarketRoutes } from './routes/marketRoutes.js';
 export function createApp(db) {
   const app = express();
 
-  app.use(cors());
+  // CORS：按环境白名单收敛（D9），非白名单来源不带 CORS 头；
+  // 无 origin（同源 / curl / 非浏览器）放行，避免破坏探活与脚本调用。
+  const allowedOrigins = env.CLIENT_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean);
+  app.use(cors({
+    origin(origin, cb) {
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+  }));
   // 图片导入路由需要更大请求体（base64 多图）
   app.use('/api/portfolio/holdings/import-image', express.json({ limit: '20mb' }));
   app.use(express.json({ limit: '5mb' }));
@@ -40,6 +50,8 @@ export function createApp(db) {
   app.use('/api/strategies', createStrategyRoutes(db));
   app.use('/api/ai', createAiRoutes(db));
   app.use('/api/market', createMarketRoutes(db));
+  // 智能分析中心（骨架：capabilities 可用，quant/signal/pipeline 待 T03-T05 填充）
+  app.use('/api/analysis', createAnalysisRoutes(db));
 
   // 兜底
   app.use(notFoundHandler);

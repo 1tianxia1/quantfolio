@@ -36,12 +36,20 @@ export interface PipelineFunnelStep {
   label: string;
   survivors: number;
   eliminated: number;
+  /** 本步中因「字段缺失」被淘汰的数量（区别于规则不满足） */
+  missing?: number;
   top_reasons: { reason: string; count: number }[];
 }
 
 export interface PipelineResult {
   funnel: PipelineFunnelStep[];
   items: ScreenerResult[];
+  /** 关键字段数据可用性是否达标（false 时结果可能为空/偏少） */
+  dataReady?: boolean;
+  /** 数据可用性提示文案（如「缺少换手率字段，请先同步行情」） */
+  dataHint?: string | null;
+  /** 关键字段可用基数统计 */
+  fieldStats?: { total: number; circ_mv: number; turnover_rate: number; auction_pct: number; volume_ratio: number };
 }
 
 export interface PipelineStepConfig {

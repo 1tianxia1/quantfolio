@@ -61,7 +61,7 @@ export function createAiReportService(db) {
     const resolved = resolveAiConfig(userAiConfig, userId);
     if (resolved.notConfigured) return notConfiguredResponse();
 
-    const tradeDate = model.latestTradeDate();
+    const tradeDate = model.latestTradeDate() || new Date().toISOString().slice(0, 10);
     const summary = portfolio.buildSummary(userId);
     const hash = snapshotHash(summary.holdings);
     const refKey = `${hash}`;
@@ -89,7 +89,7 @@ export function createAiReportService(db) {
     const resolved = resolveAiConfig(userAiConfig, userId);
     if (resolved.notConfigured) return notConfiguredResponse();
 
-    const tradeDate = model.latestTradeDate();
+    const tradeDate = model.latestTradeDate() || new Date().toISOString().slice(0, 10);
     const refKey = 'daily';
     if (!force_refresh) {
       const cached = reports.getCached(userId, REPORT_TYPE.MORNING_COMMENT, refKey, tradeDate);
@@ -115,7 +115,7 @@ export function createAiReportService(db) {
     const resolved = resolveAiConfig(userAiConfig, userId);
     if (resolved.notConfigured) return notConfiguredResponse();
 
-    const tradeDate = model.latestTradeDate();
+    const tradeDate = model.latestTradeDate() || new Date().toISOString().slice(0, 10);
     const refKey = strategy_id ? `strategy:${strategy_id}` : `cond:${snapshotHash([{ n: JSON.stringify(conditions || {}) }])}`;
     if (!force_refresh) {
       const cached = reports.getCached(userId, REPORT_TYPE.CLOSING_INTERPRETATION, refKey, tradeDate);

@@ -47,6 +47,23 @@ export function createPipelineService(db) {
     const codes = securities.map((s) => s.code);
     const snapByCode = new Map(indicators.getLatestSnapshot(codes, { types: ['stock'] }).map((s) => [s.code, s]));
 
+    // D1/D6 数据可用性预检：关键字段大面积缺失会让漏斗「静默 0 命中」，
+    // 用户会误以为功能坏了。这里显式统计并随结果返回提示，区分「字段缺失」与「规则不满足」。
+    const fieldStats = { total: codes.length, circ_mv: 0, turnover_rate: 0, auction_pct: 0, volume_ratio: 0 };
+    for (const snap of snapByCode.values()) {
+      if (snap.circ_mv != null) fieldStats.circ_mv += 1;
+      if (snap.turnover_rate != null) fieldStats.turnover_rate += 1;
+      if (snap.auction_pct != null) fieldStats.auction_pct += 1;
+      if (snap.volume_ratio != null) fieldStats.volume_ratio += 1;
+    }
+    const keyField = type === 'closing' ? 'turnover_rate' : 'circ_mv';
+    const keyFieldLabel = keyField === 'turnover_rate' ? '换手率(turnover_rate)' : '流通市值(circ_mv)';
+    const keyCount = fieldStats[keyField];
+    const dataReady = keyCount >= Math.min(100, fieldStats.total);
+    const dataHint = dataReady
+      ? null
+      : `当前行情数据缺少「${keyFieldLabel}」字段（可用 ${keyCount}/${fieldStats.total} 只），筛选结果可能为空或严重偏少，请先同步行情数据后再运行`;
+
     // 板块热度上下文（评分用）
     const sectorHeat = buildSectorHeatMap(db);
     const mainlineTier = buildMainlineTier(db, req.steps || [], type);
@@ -57,7 +74,7 @@ export function createPipelineService(db) {
 
     for (const step of configs) {
       if (!step.enabled) {
-        funnel.push({ step_id: step.id, label: step.label, survivors: pool.length, eliminated: 0, top_reasons: [] });
+        funnel.push({ step_id: step.id, label: step.label, survivors: pool.length, eliminated: 0, missing: 0, top_reasons: [] });
         continue;
       }
       // 排名型步骤（取 TopN）与硬过滤步骤分开处理
@@ -91,6 +108,8 @@ export function createPipelineService(db) {
         label: step.label,
         survivors: pass.length,
         eliminated: fail.length,
+        // D1/D6：本步中因「字段缺失」被淘汰的数量（区别于规则不满足）
+        missing: reasons.filter((r) => /缺失/.test(r.reason)).length,
         top_reasons: topReasons,
       });
       pool = pass;
@@ -121,7 +140,7 @@ export function createPipelineService(db) {
     scored.sort((a, b) => b.score - a.score);
     scored.forEach((r, i) => { r.rank = i + 1; });
 
-    return { funnel, items: scored };
+    return { funnel, items: scored, dataReady, dataHint, fieldStats };
   }
   };
 }

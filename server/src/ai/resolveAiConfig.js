@@ -7,7 +7,8 @@
 // 解析优先级（不可更改，与既有 AI 报告功能保持同一条链）：
 //   1. 登录用户且已配置 user_ai_config.api_key → 用该配置（真 BYOK）
 //   2. 游客（未登录）                          → 回落服务端 .env 默认（保证演示可用）
-//   3. 登录用户但未配置 Key                    → notConfigured=true，禁止调用 AI
+//   3. 登录用户但未配置 Key 且服务端有默认 Key → 回落服务端默认（D7 修复能力倒挂，受 AI 限流保护）
+//   4. 登录用户未配置 Key 且服务端也无 Key     → notConfigured=true，引导去「模型设置」
 //
 // 红线：本模块**只解析、不调用**，不发起任何网络请求，不写库。
 //       返回的 aiConfig.apiKey 是明文，仅允许在服务端内部流转，
@@ -99,7 +100,23 @@ export function resolveAiConfig(userAiConfigModel, userId) {
     };
   }
 
-  // 已登录但未配置 AI Key → 强制要求先配置，不可使用 AI 功能
+  // 已登录但未配置 AI Key：
+  // D7 修复——若服务端配置了默认 Key，则与游客一致回落服务端默认（受 AI 限流保护），
+  // 避免「登录后 AI 反不可用」的能力倒挂；仅当服务端也未配置 Key 时才要求用户配置。
+  if (env.AI_API_KEY) {
+    return {
+      notConfigured: false,
+      aiConfig: null, // callLLM 会回落到服务端 .env
+      aiMeta: {
+        provider: env.AI_PROVIDER,
+        providerLabel: getProvider(env.AI_PROVIDER)?.label || env.AI_PROVIDER,
+        model: env.AI_MODEL,
+        custom: false,
+      },
+      capabilities: buildCapabilities(env.AI_PROVIDER, true),
+    };
+  }
+
   return {
     notConfigured: true,
     aiConfig: null,

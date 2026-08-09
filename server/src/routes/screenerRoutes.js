@@ -9,6 +9,15 @@ import { createMarketService } from '../services/marketService.js';
 import { optionalAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { ok } from '../util/response.js';
+import { createHttpRateLimiter } from '../util/httpRateLimit.js';
+
+// 导出频控（D10）：export.csv 属只读白名单操作（游客可用），但按 IP 限频防滥用
+const exportLimiter = createHttpRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  keyFn: (req) => `screener-export:${req.ip}`,
+  message: '导出过于频繁，请 1 小时后再试',
+});
 
 // 通用条件 schema（宽松：未知字段忽略）
 const conditionsSchema = z.record(z.any());
@@ -111,8 +120,8 @@ export function createScreenerRoutes(db) {
     } catch (e) { next(e); }
   });
 
-  // 导出 CSV（UTF-8 BOM，中文不乱码）
-  router.post('/export.csv', optionalAuth, validateBody(conditionsSchema), (req, res, next) => {
+  // 导出 CSV（UTF-8 BOM，中文不乱码）；只读白名单操作，游客可用但受 exportLimiter 频控
+  router.post('/export.csv', optionalAuth, exportLimiter, validateBody(conditionsSchema), (req, res, next) => {
     try {
       const type = req.body.type === 'morning' ? 'morning' : 'closing';
       const { type: _t, ...conditions } = req.body;

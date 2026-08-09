@@ -7,6 +7,7 @@ import { createAuthService } from '../services/authService.js';
 import { requireAuth, optionalAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { ok } from '../util/response.js';
+import { createHttpRateLimiter } from '../util/httpRateLimit.js';
 
 const registerSchema = z.object({
   username: z.string().min(2, '用户名至少 2 个字符').max(30),
@@ -24,6 +25,14 @@ const passwordSchema = z.object({
   new_password: z.string().min(8, '新密码至少 8 位'),
 });
 
+// 登录防爆破（D2）：按「IP + 账号」15 分钟最多 15 次失败尝试，超出 429
+const loginLimiter = createHttpRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  keyFn: (req) => `login:${req.ip}:${String(req.body?.account || '').toLowerCase()}`,
+  message: '登录尝试过于频繁，请 15 分钟后再试',
+});
+
 export function createAuthRoutes(db) {
   const router = Router();
   const auth = createAuthService(db);
@@ -34,7 +43,7 @@ export function createAuthRoutes(db) {
     } catch (e) { next(e); }
   });
 
-  router.post('/login', validateBody(loginSchema), (req, res, next) => {
+  router.post('/login', loginLimiter, validateBody(loginSchema), (req, res, next) => {
     try {
       res.json(ok(auth.login(req.validated), '登录成功'));
     } catch (e) { next(e); }

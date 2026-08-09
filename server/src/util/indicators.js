@@ -189,3 +189,137 @@ export function piecewise(x, breakpoints) {
   }
   return bp[bp.length - 1][1];
 }
+
+// ============================================================
+// 以下为「智能分析中心」模块 B（架构 §7.6）新增纯函数
+// 铁律：本段与 signalRules.js 一样禁止 I/O / Date.now() / 随机数，
+//       P2 回测将逐根回放这些函数，必须完全确定。
+// ============================================================
+
+/**
+ * 摆动点检测：左右各 k 根确认的局部高/低点（架构 §7.6 divergence 用）
+ * @param {number[]} values 序列（升序，末位最新）
+ * @param {number} k 左右确认根数（默认 3）
+ * @returns {{ highs: number[], lows: number[] }} 索引数组（升序）
+ */
+export function findPivots(values, k = 3) {
+  const highs = [];
+  const lows = [];
+  const n = values.length;
+  for (let i = k; i < n - k; i++) {
+    const v = values[i];
+    if (v === null || v === undefined || !Number.isFinite(v)) continue;
+    let isHigh = true;
+    let isLow = true;
+    for (let j = i - k; j <= i + k; j++) {
+      if (j === i) continue;
+      const u = values[j];
+      if (u === null || u === undefined || !Number.isFinite(u)) continue;
+      if (u >= v) isHigh = false;
+      if (u <= v) isLow = false;
+    }
+    if (isHigh) highs.push(i);
+    if (isLow) lows.push(i);
+  }
+  return { highs, lows };
+}
+
+/**
+ * 顶/底背离检测（架构 §7.6，纯函数）
+ * 近 window 根内，取左右各 k 根确认的摆动点：
+ *   底背离：最近两个摆动低点 价格 P2 < P1 而 DIF2 > DIF1（价格新低、动能抬高）→ bullish
+ *   顶背离：对称（价格新高、动能走低）→ bearish
+ * @param {number[]} closes 收盘价序列（升序，末位最新）
+ * @param {Array<number|null>} dif MACD DIF 序列（与 closes 等长）
+ * @param {number} [window=60] 检测窗口
+ * @param {number} [k=3] 摆动点确认根数
+ * @returns {{ top: boolean, bottom: boolean, topIndex: number|null, bottomIndex: number|null }}
+ */
+export function detectDivergence(closes, dif, window = 60, k = 3) {
+  const len = closes.length;
+  const start = Math.max(0, len - window);
+  const sliceC = closes.slice(start);
+  const sliceD = dif.slice(start);
+  const { highs, lows } = findPivots(sliceC, k);
+
+  let bottom = false;
+  let bottomIndex = null;
+  if (lows.length >= 2) {
+    const p1 = lows[lows.length - 2];
+    const p2 = lows[lows.length - 1];
+    const d1 = sliceD[p1];
+    const d2 = sliceD[p2];
+    if (p2 > p1 && sliceC[p2] < sliceC[p1] && d1 != null && d2 != null && Number.isFinite(d1) && Number.isFinite(d2) && d2 > d1) {
+      bottom = true;
+      bottomIndex = start + p2;
+    }
+  }
+
+  let top = false;
+  let topIndex = null;
+  if (highs.length >= 2) {
+    const h1 = highs[highs.length - 2];
+    const h2 = highs[highs.length - 1];
+    const d1 = sliceD[h1];
+    const d2 = sliceD[h2];
+    if (h2 > h1 && sliceC[h2] > sliceC[h1] && d1 != null && d2 != null && Number.isFinite(d1) && Number.isFinite(d2) && d2 < d1) {
+      top = true;
+      topIndex = start + h2;
+    }
+  }
+
+  return { top, bottom, topIndex, bottomIndex };
+}
+
+/**
+ * 趋势状态（架构 §7.6 trend_30d_*）：
+ *   up   ：斜率 > 0 且区间涨幅 ≥ +5%
+ *   down ：斜率 < 0 且区间跌幅 ≤ −5%
+ *   range：区间涨跌幅绝对值 < 5% 且 (max−min)/mean < 12%（仅打标）
+ * 斜率用最小二乘（对索引）。
+ * @param {number[]} closes 收盘价序列（升序）
+ * @param {number} [window=30] 窗口
+ * @returns {{ slope: number, rangePct: number, amplitudePct: number|null, regime: 'up'|'down'|'range'|'insufficient' }}
+ */
+export function trendRegime(closes, window = 30) {
+  const len = closes.length;
+  const start = Math.max(0, len - window);
+  const seg = closes.slice(start).filter((v) => v !== null && v !== undefined && Number.isFinite(v));
+  if (seg.length < 10) return { slope: 0, rangePct: 0, amplitudePct: null, regime: 'insufficient' };
+  const n = seg.length;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += seg[i];
+    sumXY += i * seg[i];
+    sumXX += i * i;
+  }
+  const denom = n * sumXX - sumX * sumX;
+  const slope = denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
+  const first = seg[0];
+  const last = seg[n - 1];
+  const rangePct = first === 0 ? 0 : ((last - first) / first) * 100;
+  const mean = seg.reduce((s, v) => s + v, 0) / n;
+  const max = Math.max(...seg);
+  const min = Math.min(...seg);
+  const amplitudePct = mean === 0 ? 0 : ((max - min) / mean) * 100;
+
+  let regime = 'range';
+  if (slope > 0 && rangePct >= 5) regime = 'up';
+  else if (slope < 0 && rangePct <= -5) regime = 'down';
+  return { slope, rangePct, amplitudePct, regime };
+}
+
+/**
+ * 量能状态（架构 §7.6 volume_expand / volume_shrink）
+ * @param {number|null|undefined} volRatio5 5 日量比
+ * @returns {{ expand: boolean, shrink: boolean }}
+ */
+export function volumeRegime(volRatio5) {
+  const v = Number(volRatio5);
+  if (!Number.isFinite(v)) return { expand: false, shrink: false };
+  return { expand: v >= 1.5, shrink: v <= 0.7 };
+}

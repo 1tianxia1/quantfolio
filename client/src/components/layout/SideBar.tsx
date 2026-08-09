@@ -9,6 +9,7 @@ import WbSunnyIcon from '@mui/icons-material/WbSunny';
 import WbTwilightIcon from '@mui/icons-material/WbTwilight';
 import StarIcon from '@mui/icons-material/Star';
 import FolderIcon from '@mui/icons-material/Folder';
+import InsightsIcon from '@mui/icons-material/Insights';
 import SettingsIcon from '@mui/icons-material/Settings';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { key: 'closing', label: '尾盘选股器', icon: <WbTwilightIcon fontSize="small" />, path: '/closing' },
   { key: 'strategies', label: '我的策略', icon: <FolderIcon fontSize="small" />, path: '/strategies' },
   { key: 'watchlist', label: '我的自选', icon: <StarIcon fontSize="small" />, path: '/watchlist' },
+  { key: 'analysis', label: '智能分析中心', icon: <InsightsIcon fontSize="small" />, path: '/analysis' },
   { key: 'settings', label: '模型设置', icon: <SettingsIcon fontSize="small" />, path: '/settings', requireLogin: true },
 ];
 

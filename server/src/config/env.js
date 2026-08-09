@@ -26,6 +26,8 @@ function num(name, fallback = 0) {
 const env = {
   NODE_ENV: str('NODE_ENV', 'development'),
   PORT: num('PORT', 3001),
+  // CORS 白名单（逗号分隔；默认仅本地前端 dev 源）
+  CLIENT_ORIGIN: str('CLIENT_ORIGIN', 'http://localhost:5173'),
 
   JWT_SECRET: str('JWT_SECRET', 'quantfolio-dev-secret-change-me'),
   JWT_EXPIRES_IN: num('JWT_EXPIRES_IN', 7 * 24 * 3600),

@@ -15,6 +15,16 @@ import { testLLM } from '../services/aiService.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { ok } from '../util/response.js';
+import { createHttpRateLimiter } from '../util/httpRateLimit.js';
+
+// AI 生成接口防刷（D2）：无论游客还是登录用户（共用服务端 Key 时都消耗后端账单），
+// 按「登录用户 id / 游客 IP」每小时最多 60 次生成请求，超出 429。
+const aiGenerateLimiter = createHttpRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  keyFn: (req) => `ai-gen:${req.user?.id ?? req.ip}`,
+  message: 'AI 分析调用过于频繁，请 1 小时后再试',
+});
 
 const diagnoseSchema = z.object({ force_refresh: z.boolean().optional() });
 const commentSchema = z.object({
@@ -46,7 +56,7 @@ export function createAiRoutes(db) {
   const ai = createAiReportService(db);
   const userAiConfig = createUserAiConfigModel(db);
 
-  router.post('/diagnose', optionalAuth, validateBody(diagnoseSchema), async (req, res, next) => {
+  router.post('/diagnose', optionalAuth, aiGenerateLimiter, validateBody(diagnoseSchema), async (req, res, next) => {
     try {
       const userId = req.user?.id ?? null;
       const report = await ai.diagnose(userId, req.validated);
@@ -54,7 +64,7 @@ export function createAiRoutes(db) {
     } catch (e) { next(e); }
   });
 
-  router.post('/morning-comment', optionalAuth, validateBody(commentSchema), async (req, res, next) => {
+  router.post('/morning-comment', optionalAuth, aiGenerateLimiter, validateBody(commentSchema), async (req, res, next) => {
     try {
       const userId = req.user?.id ?? null;
       const report = await ai.morningComment(userId, req.validated);
@@ -62,7 +72,7 @@ export function createAiRoutes(db) {
     } catch (e) { next(e); }
   });
 
-  router.post('/closing-interpret', optionalAuth, validateBody(interpretSchema), async (req, res, next) => {
+  router.post('/closing-interpret', optionalAuth, aiGenerateLimiter, validateBody(interpretSchema), async (req, res, next) => {
     try {
       const userId = req.user?.id ?? null;
       const report = await ai.closingInterpret(userId, req.validated);

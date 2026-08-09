@@ -106,6 +106,7 @@ export const ERROR_CODE = {
   AI_NOT_CONFIGURED: 42402, // 登录用户未配置 AI Key
   CONFLICT: 40900,          // 唯一性冲突
   INTERNAL: 50000,          // 服务器内部错误
+  NOT_IMPLEMENTED: 50100,   // 骨架已就位、实现排期在后续任务
   UPSTREAM_UNAVAILABLE: 50301, // 上游数据源不可用且降级也失败
   AI_TIMEOUT: 50400,        // AI 超时
 };

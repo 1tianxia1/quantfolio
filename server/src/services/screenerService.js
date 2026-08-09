@@ -87,10 +87,16 @@ export function createScreenerService(db) {
     const start = (page - 1) * pageSize;
     const items = results.slice(start, start + pageSize).map((r, i) => ({ ...r, rank: start + i + 1 }));
 
+    // D6：统计因「字段缺失」被淘汰的数量（区别于规则不满足），供前端提示数据完备性问题
+    const eliminatedByMissing = eliminated.filter(
+      (e) => Array.isArray(e.reasons) && e.reasons.some((r) => typeof r === 'string' && r.includes('缺失')),
+    ).length;
+
     return {
       total,
       items,
       eliminated: eliminated.length,
+      eliminated_by_missing: eliminatedByMissing,
       score_weights: type === 'morning' ? scorerWeightMorning() : scorerWeightClosing(),
     };
   },

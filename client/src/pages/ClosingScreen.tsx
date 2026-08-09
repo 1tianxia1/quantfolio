@@ -243,7 +243,7 @@ export default function ClosingScreen() {
                 )}
                 {pipeline && pipeline.items.length === 0 && (
                   <Alert severity="info" sx={{ mb: 1, fontSize: 12 }}>
-                    当前无标的同时满足 5 步条件（形态严格属正常），可尝试关闭部分步骤或切换通用筛选。
+                    {pipeline.dataHint || '当前无标的同时满足 5 步条件（形态严格属正常），可尝试关闭部分步骤或切换通用筛选。'}
                   </Alert>
                 )}
               </>

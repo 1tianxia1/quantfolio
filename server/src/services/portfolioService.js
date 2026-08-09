@@ -33,6 +33,27 @@ export function createPortfolioService(db) {
     let dayProfit = 0;
 
     const enriched = holdings.map((h) => {
+      // D5 防御：历史脏数据/极端数值（quantity 或 cost_price 非有限）不参与汇总，
+      // 否则 totalAsset 溢出成 null，导致汇总与再平衡整体瘫痪。该行按 0 值处理并标记。
+      if (!Number.isFinite(Number(h.quantity)) || !Number.isFinite(Number(h.cost_price))) {
+        return {
+          ...h,
+          current_price: null,
+          market_value: 0,
+          cost_amount: 0,
+          profit: 0,
+          profit_rate: null,
+          day_profit: 0,
+          day_profit_rate: null,
+          current_pct: 0,
+          target_pct: null,
+          deviation_pct: null,
+          deviation_ratio: null,
+          quote_date: null,
+          data_origin: 'invalid',
+        };
+      }
+
       if (h.asset_class === ASSET_CLASS.CASH) {
         // 现金行：quantity 即金额，cost_price=1
         const marketValue = h.quantity;

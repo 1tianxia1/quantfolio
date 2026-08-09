@@ -1,7 +1,7 @@
 // ============================================================
 // 组合 API：holdings/summary/targets/rebalance/settings
 // ============================================================
-import http, { unwrap } from './http';
+import http, { httpLong, unwrap } from './http';
 
 export interface Holding {
   id: number;
@@ -165,8 +165,9 @@ export const portfolioApi = {
     );
   },
   importImage(images: string[], hint?: 'stock' | 'fund') {
+    // D8：视觉模型识别可能超过 30s，使用 90s 长超时实例
     return unwrap<{ candidates: Partial<Holding>[]; warnings: string[] }>(
-      http.post('/portfolio/holdings/import-image', { images, hint }),
+      httpLong.post('/portfolio/holdings/import-image', { images, hint }),
     );
   },
   summary(dimension?: string) {
