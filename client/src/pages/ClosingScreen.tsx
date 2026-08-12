@@ -266,7 +266,18 @@ export default function ClosingScreen() {
                     {steps.map((s) => (
                       <FormControlLabel
                         key={s.id}
-                        control={<Checkbox size="small" checked={s.enabled} onChange={(e) => setSteps((st) => st.map((x) => (x.id === s.id ? { ...x, enabled: e.target.checked } : x)))} />}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={s.enabled}
+                            onChange={(e) => {
+                              const next = steps.map((x) => (x.id === s.id ? { ...x, enabled: e.target.checked } : x));
+                              setSteps(next);
+                              setRelaxed(false);
+                              void runPipeline(next, false);
+                            }}
+                          />
+                        }
                         label={<Typography variant="caption">{s.label}</Typography>}
                         sx={{ display: 'block', m: 0 }}
                       />

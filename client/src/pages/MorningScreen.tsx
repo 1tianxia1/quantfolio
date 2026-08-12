@@ -253,7 +253,18 @@ export default function MorningScreen() {
                     {steps.map((s) => (
                       <FormControlLabel
                         key={s.id}
-                        control={<Checkbox size="small" checked={s.enabled} onChange={(e) => setSteps((st) => st.map((x) => (x.id === s.id ? { ...x, enabled: e.target.checked } : x)))} />}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={s.enabled}
+                            onChange={(e) => {
+                              const next = steps.map((x) => (x.id === s.id ? { ...x, enabled: e.target.checked } : x));
+                              setSteps(next);
+                              setRelaxed(false);
+                              void runPipeline(next, looseMode, false);
+                            }}
+                          />
+                        }
                         label={<Typography variant="caption">{s.label}</Typography>}
                         sx={{ display: 'block', m: 0 }}
                       />
@@ -261,7 +272,18 @@ export default function MorningScreen() {
                   </Box>
                 )}
                 <FormControlLabel
-                  control={<Checkbox size="small" checked={looseMode} onChange={(e) => setLooseMode(e.target.checked)} />}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={looseMode}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setLooseMode(next);
+                        setRelaxed(false);
+                        void runPipeline(steps, next, false);
+                      }}
+                    />
+                  }
                   label={<Typography variant="caption">宽松模式（第4步 &lt;30亿，默认 &lt;10亿）</Typography>}
                   sx={{ mb: 1 }}
                 />
