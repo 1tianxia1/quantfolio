@@ -28,19 +28,15 @@ if (max > 0) codes = codes.slice(0, max);
 log(`准备为 ${codes.length} 只股票同步实时快照以补 turnover_rate`);
 
 const maxTradeDate = db.prepare('SELECT MAX(trade_date) d FROM daily_quotes').get().d;
-const before = db.prepare(
-  `SELECT COUNT(*) total, COUNT(turnover_rate) filled FROM daily_quotes WHERE trade_date = ? AND code IN (${codes.map(() => '?').join(',')})`
-).get(maxTradeDate, ...codes);
-log(`补全前：目标 ${codes.length} 只中，最新交易日 ${maxTradeDate} 有 ${before.total} 行，turnover_rate 有值 ${before.filled} 行`);
+const before = db.prepare('SELECT COUNT(*) total, COUNT(turnover_rate) filled FROM daily_quotes WHERE trade_date = ?').get(maxTradeDate);
+log(`补全前：最新交易日 ${maxTradeDate} 有 ${before.total} 行，turnover_rate 有值 ${before.filled} 行`);
 
 const svc = createQuoteSyncService(db);
 const result = await svc.syncLatestQuotes(codes);
 log(`同步完成：写入 ${result.written} 行，跳过 ${result.skipped}，未取到 ${result.missing.length} 只`);
 
 const newMaxDate = db.prepare('SELECT MAX(trade_date) d FROM daily_quotes').get().d;
-const after = db.prepare(
-  `SELECT COUNT(*) total, COUNT(turnover_rate) filled FROM daily_quotes WHERE trade_date = ? AND code IN (${codes.map(() => '?').join(',')})`
-).get(newMaxDate, ...codes);
-log(`补全后：最新交易日 ${newMaxDate} 有 ${after.total} 行，turnover_rate 有值 ${after.filled} 行（新增 ${after.filled - before.filled}）`);
+const after = db.prepare('SELECT COUNT(*) total, COUNT(turnover_rate) filled FROM daily_quotes WHERE trade_date = ?').get(newMaxDate);
+log(`补全后：最新交易日 ${newMaxDate} 有 ${after.total} 行，turnover_rate 有值 ${after.filled} 行（新增 ${Math.max(0, after.filled - before.filled)}）`);
 
 process.exit(0);
