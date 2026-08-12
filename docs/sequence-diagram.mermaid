@@ -1,91 +1,67 @@
+%% ============================================================
+%% 时序图 1：一次回测请求流（Backtest run）
+%% ============================================================
 sequenceDiagram
-    participant U as 浏览器
-    participant L as LoginPage
-    participant A as /api/auth/login
-    participant AS as authService
-    participant DB as users
-    participant M as /api/portfolio/summary
-    participant MW as auth中间件
-    U->>L: 输入账号密码
-    L->>A: POST {account,password}
-    A->>AS: login(account,password)
-    AS->>DB: SELECT user WHERE username/email
-    AS->>AS: bcrypt.compare(password, hash)
-    alt 校验失败
-        AS-->>A: 401 {code:40101, message:'账号或密码错误'}
-        A-->>L: 显示错误
-    else 成功
-        AS->>AS: jwt.sign({id,username}, JWT_SECRET, {expiresIn:'7d'})
-        AS-->>A: {token, user}
-        A-->>L: 保存 token+user → authStore(localStorage)
-        L->>M: GET /api/portfolio/summary (Authorization: Bearer token)
-        M->>MW: 校验 JWT
-        alt token 有效
-            MW->>M: req.user={id}
-            M-->>L: PortfolioSummary
-        else 过期/无效
-            MW-->>L: 401 → 前端清 token → 跳登录页(回跳原地址)
-        end
-    end
+    participant C as 前端 BacktestPage
+    participant R as BacktestRoutes
+    participant B as BacktestService
+    participant DB as Database
+    participant S as ScoreService
 
-sequenceDiagram
-    participant U as 浏览器
-    participant D as Dashboard
-    participant S as /api/portfolio/summary
-    participant PS as portfolioService
-    participant DP as SqliteProvider
-    participant R as /api/portfolio/rebalance
-    participant AI as /api/ai/diagnose
-    participant AR as aiReportService
-    participant GLM as 智谱GLM
-    U->>D: 打开仪表盘
-    D->>S: GET /api/portfolio/summary
-    S->>PS: buildSummary(userId)
-    PS->>DP: getQuotes(codes) → 最新收盘价
-    PS->>PS: market_value/cost/profit/profit_rate/day_profit
-    PS->>PS: current_pct / 偏离度 / CR3 / HHI / 行业分布
-    PS-->>D: PortfolioSummary
-    D->>R: POST /api/portfolio/rebalance {threshold}
-    R->>R: |deviation_pct|>=threshold → BUY/SELL, 100股向下取整
-    R-->>D: RebalanceSuggestion[] + 现金校验
-    D->>AI: POST /api/ai/diagnose {force_refresh:false}
-    AI->>AR: getCached(userId,'portfolio_diagnosis',snapshotHash,tradeDate)
-    alt 缓存命中
-        AR-->>D: {content, cached:true}
-    else 未命中
-        AR->>GLM: fetch(ZHIPU_BASE_URL, {model:'glm-4-flash', messages:prompt})
-        alt 成功
-            GLM-->>AR: markdown 小节(集中度/行业/风险/调仓建议)
-            AR->>DB: INSERT ai_reports
-            AR-->>D: {content, cached:false}
-        else 超时/失败
-            AR-->>D: 本地规则版兜底摘要 + 免责提示
+    C->>R: POST /api/backtest/run (BacktestRequest)
+    R->>B: run(req)
+    B->>DB: getCalendar(range) → DISTINCT trade_date 升序（idx_dq_date）
+    DB-->>B: dates[]
+    loop 每个交易日 T = dates[i]
+        B->>DB: getBaseSnapshotsAsOf(T)  daily_quotes@T JOIN tech_indicators@T JOIN securities(type='stock') LEFT JOIN aux@T
+        DB-->>B: snaps[]
+        alt 早盘模型（morning / morningPipeline）
+            B->>DB: getAsOfPool(T)  volume_ratio / net_inflow_3d 全市场@T
+            DB-->>B: pool
         end
+        loop 每个标的 snap
+            B->>S: scoreX(snap, {weights, pool, sectorHeat?})
+            S-->>B: {total, factors}
+        end
+        B->>B: 过滤 total ≥ minScore，降序取 topN
+        B->>DB: getNextRet(code, dates[i+1])  daily_quotes pct_chg（仅下一交易日）
+        DB-->>B: nextRet
+        B->>B: nextRet 有效则记录 {tradeDate, code, name, score, nextRet}
     end
+    B->>B: summarize(trades) → winRate / avgNextRet / 分布
+    B->>B: dataCaveat = 早盘 ? 'morning aux data sparse...' : null
+    opt 落库开启
+        B->>BacktestModel: save({kind:'backtest', model, params, summary})
+    end
+    R-->>C: BacktestResult（summary + trades[]）
 
+%% ============================================================
+%% 时序图 2：一次调参请求流（Tune）
+%% ============================================================
 sequenceDiagram
-    participant U as 浏览器
-    participant C as ClosingScreen
-    participant P as /api/screener/pipeline/run
-    participant PS as pipelineService
-    participant TI as tech_indicators
-    participant SC as scoreService
-    participant AI as /api/ai/closing-interpret
-    participant GLM as 智谱GLM
-    U->>C: 加载「尾盘五步法（用户核心）」
-    C->>P: POST {type:'closing', steps:[5步阈值]}
-    P->>PS: runPipeline(steps)
-    loop 每步
-        PS->>TI: 查询最新交易日快照（涨幅/换手/市值/volume_streak/均线/60日空间）
-        PS->>PS: filter → survivors / eliminated + 淘汰原因统计
+    participant C as 前端 TuningPanel
+    participant R as BacktestRoutes
+    participant T as TuningService
+    participant B as BacktestService
+    participant DB as Database
+    participant S as ScoreService
+
+    C->>R: POST /api/backtest/tune (TuneRequest)
+    R->>T: tune(req)
+    T->>T: expandGrid(tuneTargets) → combos[]（笛卡尔积）
+    T->>B: buildSnapshots(req)  # 仅一次：按 sampling 取交易日，物化 AS-OF-T 快照（与权重无关，含预取 nextRet）
+    B->>DB: getCalendar + getBaseSnapshotsAsOf(T) 循环
+    DB-->>B: baseByDay: Map<T, {snap, nextRet}[]>
+    B-->>T: baseByDay
+    loop 每个权重组合 combo
+        loop 每个交易日 T
+            loop 每个标的 {snap, nextRet}
+                T->>S: scoreX(snap, {weights: combo, pool})
+                S-->>T: {total, factors}
+            end
+            T->>T: 过滤/topN + 读预取 nextRet + 累计
+        end
+        T->>T: summarize → metrics(combo)
     end
-    PS->>SC: score(通过全部步骤的标的, 'closing_pipeline')
-    PS-->>C: {funnel:[5步剩余数+淘汰Top原因], items:[ScreenerResult+命中步骤标签]}
-    C->>C: 漏斗可视化 + 结果表（上方60日空间%标灰提示）
-    C->>AI: POST /api/ai/closing-interpret {items:Top5, strategy_id}
-    AI->>AI: 按「用户+策略+交易日」查缓存
-    alt 未命中
-        AI->>GLM: 提示词(筛选逻辑摘要+Top5量化解释)
-        GLM-->>AI: markdown
-        AI-->>C: AiReport
-    end
+    T->>T: rankBy(results, objective) 取 topK
+    R-->>C: TuneResult（results: TuneCombo[]）

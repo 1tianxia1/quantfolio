@@ -327,6 +327,7 @@ function pickMetrics(snap) {
   return {
     pct_chg: snap.pct_chg,
     turnover_rate: snap.turnover_rate,
+    volume: snap.volume,
     volume_ratio: snap.volume_ratio,
     vol_ratio_5: snap.vol_ratio_5,
     pe_ttm: snap.pe_ttm,

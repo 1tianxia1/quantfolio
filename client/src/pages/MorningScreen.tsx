@@ -2,7 +2,7 @@
 // 模块二：早盘选股（七步法漏斗 + 竞价榜 + 通用筛选 + AI）
 // ============================================================
 import { useCallback, useEffect, useState } from 'react';
-import { Box, Typography, Button, Alert, ToggleButton, ToggleButtonGroup, FormControlLabel, Checkbox, Stack, Chip } from '@mui/material';
+import { Box, Typography, Button, ButtonGroup, Alert, ToggleButton, ToggleButtonGroup, FormControlLabel, Checkbox, Stack, Chip, Divider } from '@mui/material';
 import PipelineFunnel from '../components/screener/PipelineFunnel';
 import AuctionLeaderboard from '../components/screener/AuctionLeaderboard';
 import ConditionPanelMorning, { type MorningConditions } from '../components/screener/ConditionPanelMorning';
@@ -253,25 +253,56 @@ export default function MorningScreen() {
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2}>
         {/* 左侧：条件/漏斗 */}
         <Box sx={{ width: { xs: '100%', lg: 360 }, flexShrink: 0 }}>
-          <SectionCard title="策略模板" action={<Chip label={selectedPreset?.name || '未选择'} size="small" variant="outlined" />}>
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
+          <SectionCard
+            title="策略模板"
+            action={
+              <Chip
+                label={selectedPreset?.name || '未选择'}
+                size="small"
+                color={selectedPreset ? 'primary' : 'default'}
+                variant={selectedPreset ? 'filled' : 'outlined'}
+              />
+            }
+          >
+            {/* 1) 预置模板 */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1 }}>
               {presets.map((p) => (
-                <Chip key={p.id} label={p.name} size="small" color={selectedPreset?.id === p.id ? 'primary' : 'default'} variant={selectedPreset?.id === p.id ? 'filled' : 'outlined'} onClick={() => applyPreset(p)} />
+                <Chip
+                  key={p.id}
+                  label={p.name}
+                  size="small"
+                  color={selectedPreset?.id === p.id ? 'primary' : 'default'}
+                  variant={selectedPreset?.id === p.id ? 'filled' : 'outlined'}
+                  onClick={() => applyPreset(p)}
+                  sx={{
+                    justifyContent: 'center',
+                    borderRadius: 1,
+                    fontWeight: selectedPreset?.id === p.id ? 600 : 400,
+                    '&:hover': { opacity: 0.85 },
+                  }}
+                />
               ))}
             </Box>
 
+            <Divider sx={{ my: 1.5 }} />
+
             {mode === 'pipeline' ? (
               <>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                  <Button size="small" variant="outlined" onClick={selectAllSteps} disabled={!steps.length}>全选</Button>
-                  <Button size="small" variant="outlined" onClick={deselectAllSteps} disabled={!steps.length}>取消勾选</Button>
-                  <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                {/* 2) 批量操作 + 提示 */}
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 1 }}>
+                  <ButtonGroup size="small" variant="outlined" disabled={!steps.length}>
+                    <Button onClick={selectAllSteps}>全选</Button>
+                    <Button onClick={deselectAllSteps}>取消勾选</Button>
+                  </ButtonGroup>
+                  <Typography variant="caption" color="text.secondary">
                     勾选即过滤，全不选=看全市场
                   </Typography>
                 </Box>
+
+                {/* 3) 步骤清单 */}
                 {steps.length > 0 && (
                   <Box sx={{ mb: 1 }}>
-                    {steps.map((s) => (
+                    {steps.map((s, idx) => (
                       <FormControlLabel
                         key={s.id}
                         control={
@@ -286,12 +317,35 @@ export default function MorningScreen() {
                             }}
                           />
                         }
-                        label={<Typography variant="caption">{s.label}</Typography>}
-                        sx={{ display: 'block', m: 0 }}
+                        label={
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <Box
+                              sx={{
+                                width: 16,
+                                height: 16,
+                                borderRadius: '50%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                bgcolor: s.enabled ? 'primary.main' : 'action.disabledBackground',
+                                color: s.enabled ? 'primary.contrastText' : 'text.disabled',
+                                fontSize: 10,
+                                fontWeight: 700,
+                              }}
+                            >
+                              {idx + 1}
+                            </Box>
+                            <Typography variant="caption" sx={{ fontWeight: s.enabled ? 500 : 400, color: s.enabled ? 'text.primary' : 'text.secondary' }}>
+                              {s.label}
+                            </Typography>
+                          </Stack>
+                        }
+                        sx={{ display: 'flex', m: 0, py: 0.25 }}
                       />
                     ))}
                   </Box>
                 )}
+                <Divider sx={{ my: 1 }} />
                 <FormControlLabel
                   control={
                     <Checkbox
