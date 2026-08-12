@@ -13,6 +13,21 @@ import { CLOSING_PIPELINE_SCORING, MORNING_PIPELINE_SCORING } from '../config/sc
 import { piecewise, percentileScore } from '../util/indicators.js';
 import { round2 } from '../util/money.js';
 
+/**
+ * 权重合并：override 仅覆盖 defaults 中存在的键，其余保持默认。
+ * override 为 null/undefined/非对象 → 直接返回 defaults（不影响实时路径）。
+ * @param {Record<string, number>} defaults
+ * @param {Record<string, number>|null|undefined} override
+ */
+function mergeWeights(defaults, override) {
+  if (!override || typeof override !== 'object') return defaults;
+  const out = { ...defaults };
+  for (const k of Object.keys(override)) {
+    if (Object.prototype.hasOwnProperty.call(defaults, k)) out[k] = override[k];
+  }
+  return out;
+}
+
 /** 因子标签（中文） */
 const LABELS = {
   volume_ratio: '量比',
@@ -101,7 +116,10 @@ export function createScoreService(db) {
      * @param {object} ctx { sectorHeat: {sectorName -> {rank, pct_chg}} }
      */
     scoreMorning(snap, ctx = {}) {
-      const pool = getPool();
+      // 权重覆盖（部分键覆盖，其余用默认）；回测由 backtestService 注入 ctx.weights
+      const w = mergeWeights(MORNING_WEIGHTS, ctx.weights);
+      // 分位池：回测注入 AS-OF-T 全市场池（杜绝未来泄漏）；实时路径回退内部最新日池
+      const pool = ctx.pool && Array.isArray(ctx.pool.volumeRatio) ? ctx.pool : getPool();
       const factors = [];
 
       // 1) 量比 20%
@@ -111,7 +129,7 @@ export function createScoreService(db) {
         volScore = piecewise(snap.volume_ratio, MORNING_BREAKPOINTS.volume_ratio);
         volNote = `量比 ${round2(snap.volume_ratio)}`;
       }
-      factors.push(scoreFactor('volume_ratio', LABELS.volume_ratio, volScore, MORNING_WEIGHTS.volume_ratio, volNote));
+      factors.push(scoreFactor('volume_ratio', LABELS.volume_ratio, volScore, w.volume_ratio, volNote));
 
       // 2) 竞价表现 20%（0.6×pct + 0.4×vol_ratio）
       let auctionScore = MISSING_SCORE_MORNING;
@@ -122,7 +140,7 @@ export function createScoreService(db) {
         auctionScore = 0.6 * pctScore + 0.4 * vrScore;
         auctionNote = `竞价 ${snap.auction_pct != null ? round2(snap.auction_pct) + '%' : '—'}`;
       }
-      factors.push(scoreFactor('auction', LABELS.auction, auctionScore, MORNING_WEIGHTS.auction, auctionNote));
+      factors.push(scoreFactor('auction', LABELS.auction, auctionScore, w.auction, auctionNote));
 
       // 3) 资金流 20%（分位法）
       let inflowScore = MISSING_SCORE_MORNING;
@@ -132,10 +150,10 @@ export function createScoreService(db) {
         if (inflowScore == null) inflowScore = MISSING_SCORE_MORNING;
         inflowNote = `3日净流入 ${round2(snap.net_inflow_3d)} 万`;
       }
-      factors.push(scoreFactor('net_inflow', LABELS.net_inflow, inflowScore, MORNING_WEIGHTS.net_inflow, inflowNote));
+      factors.push(scoreFactor('net_inflow', LABELS.net_inflow, inflowScore, w.net_inflow, inflowNote));
 
       // 4) 连板/涨停强度 15%
-      factors.push(scoreFactor('limit_up', LABELS.limit_up, limitUpScore(snap), MORNING_WEIGHTS.limit_up, limitUpNote(snap)));
+      factors.push(scoreFactor('limit_up', LABELS.limit_up, limitUpScore(snap), w.limit_up, limitUpNote(snap)));
 
       // 5) 换手率 15%（倒U）
       let turnScore = MISSING_SCORE_MORNING;
@@ -144,7 +162,7 @@ export function createScoreService(db) {
         turnScore = piecewise(snap.turnover_rate, MORNING_BREAKPOINTS.turnover);
         turnNote = `换手 ${round2(snap.turnover_rate)}%`;
       }
-      factors.push(scoreFactor('turnover', LABELS.turnover, turnScore, MORNING_WEIGHTS.turnover, turnNote));
+      factors.push(scoreFactor('turnover', LABELS.turnover, turnScore, w.turnover, turnNote));
 
       // 6) 板块热度 10%
       let sectorScore = MISSING_SCORE_MORNING;
@@ -161,26 +179,28 @@ export function createScoreService(db) {
           sectorNote = `板块 ${snap.sector} 热度第 ${heat.rank}`;
         }
       }
-      factors.push(scoreFactor('sector_heat', LABELS.sector_heat, sectorScore, MORNING_WEIGHTS.sector_heat, sectorNote));
+      factors.push(scoreFactor('sector_heat', LABELS.sector_heat, sectorScore, w.sector_heat, sectorNote));
 
       return { total: totalFrom(factors), factors };
     },
 
     // ================= C-11 尾盘通用评分 =================
-    scoreClosing(snap) {
+    scoreClosing(snap, weights) {
+      // 权重覆盖（部分键覆盖，其余用默认）；回测由 backtestService 透传 weightsOverride
+      const w = mergeWeights(CLOSING_WEIGHTS, weights);
       const factors = [];
 
       // 趋势类 35%（0.5×MACD + 0.5×MA）
       const macdScore = macdSubScore(snap);
       const maScore = maSubScore(snap);
       const trendScore = 0.5 * macdScore + 0.5 * maScore;
-      factors.push(scoreFactor('trend', LABELS.trend, trendScore, CLOSING_WEIGHTS.trend, `${LABELS.macd} ${macdNote(snap)}; ${LABELS.ma} ${maNote(snap)}`));
+      factors.push(scoreFactor('trend', LABELS.trend, trendScore, w.trend, `${LABELS.macd} ${macdNote(snap)}; ${LABELS.ma} ${maNote(snap)}`));
 
       // 动能类 25%（0.5×RSI + 0.5×KDJ）
       const rsiScore = rsiSubScore(snap);
       const kdjScore = kdjSubScore(snap);
       const momentumScore = 0.5 * rsiScore + 0.5 * kdjScore;
-      factors.push(scoreFactor('momentum', LABELS.momentum, momentumScore, CLOSING_WEIGHTS.momentum, `${LABELS.rsi} ${rsiNote(snap)}; ${LABELS.kdj} ${kdjNote(snap)}`));
+      factors.push(scoreFactor('momentum', LABELS.momentum, momentumScore, w.momentum, `${LABELS.rsi} ${rsiNote(snap)}; ${LABELS.kdj} ${kdjNote(snap)}`));
 
       // 量能类 25%（0.5×vol_ratio_5 + 0.5×换手）
       let volRatioScore = MISSING_SCORE_CLOSING;
@@ -196,7 +216,7 @@ export function createScoreService(db) {
         turnNote = `换手 ${round2(snap.turnover_rate)}%`;
       }
       const volumeScore = 0.5 * volRatioScore + 0.5 * turnScore;
-      factors.push(scoreFactor('volume', LABELS.volume, volumeScore, CLOSING_WEIGHTS.volume, `${volRatioNote}; ${turnNote}`));
+      factors.push(scoreFactor('volume', LABELS.volume, volumeScore, w.volume, `${volRatioNote}; ${turnNote}`));
 
       // 估值类 15%（0.6×PE + 0.4×市值）
       let peScore = MISSING_SCORE_CLOSING;
@@ -212,7 +232,7 @@ export function createScoreService(db) {
         mvNote = `市值 ${round2(snap.circ_mv)}亿`;
       }
       const valuationScore = 0.6 * peScore + 0.4 * mvScore;
-      factors.push(scoreFactor('valuation', LABELS.valuation, valuationScore, CLOSING_WEIGHTS.valuation, `${peNote}; ${mvNote}`));
+      factors.push(scoreFactor('valuation', LABELS.valuation, valuationScore, w.valuation, `${peNote}; ${mvNote}`));
 
       return { total: totalFrom(factors), factors };
     },
@@ -279,7 +299,8 @@ export function createScoreService(db) {
     // ================= 七步法漏斗评分 =================
     scoreMorningPipeline(snap, ctx = {}) {
       const cfg = MORNING_PIPELINE_SCORING;
-      const pool = getPool();
+      // 分位池：回测注入 AS-OF-T 全市场池（杜绝未来泄漏）；实时路径回退内部最新日池
+      const pool = ctx.pool && Array.isArray(ctx.pool.volumeRatio) ? ctx.pool : getPool();
       const factors = [];
 
       // 1) 量比排名分位 25（Top1%=25，每降 1% 分位 -0.25）

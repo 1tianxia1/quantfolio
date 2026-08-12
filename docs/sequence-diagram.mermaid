@@ -1,67 +1,52 @@
-%% ============================================================
-%% 时序图 1：一次回测请求流（Backtest run）
-%% ============================================================
 sequenceDiagram
-    participant C as 前端 BacktestPage
-    participant R as BacktestRoutes
-    participant B as BacktestService
-    participant DB as Database
-    participant S as ScoreService
+  actor U as 用户
+  participant TP as TuningPanel
+  participant SA as strategyApi
+  participant SR as strategyRoutes
+  participant SM as strategyModel
+  participant DB as strategies 表
 
-    C->>R: POST /api/backtest/run (BacktestRequest)
-    R->>B: run(req)
-    B->>DB: getCalendar(range) → DISTINCT trade_date 升序（idx_dq_date）
-    DB-->>B: dates[]
-    loop 每个交易日 T = dates[i]
-        B->>DB: getBaseSnapshotsAsOf(T)  daily_quotes@T JOIN tech_indicators@T JOIN securities(type='stock') LEFT JOIN aux@T
-        DB-->>B: snaps[]
-        alt 早盘模型（morning / morningPipeline）
-            B->>DB: getAsOfPool(T)  volume_ratio / net_inflow_3d 全市场@T
-            DB-->>B: pool
-        end
-        loop 每个标的 snap
-            B->>S: scoreX(snap, {weights, pool, sectorHeat?})
-            S-->>B: {total, factors}
-        end
-        B->>B: 过滤 total ≥ minScore，降序取 topN
-        B->>DB: getNextRet(code, dates[i+1])  daily_quotes pct_chg（仅下一交易日）
-        DB-->>B: nextRet
-        B->>B: nextRet 有效则记录 {tradeDate, code, name, score, nextRet}
-    end
-    B->>B: summarize(trades) → winRate / avgNextRet / 分布
-    B->>B: dataCaveat = 早盘 ? 'morning aux data sparse...' : null
-    opt 落库开启
-        B->>BacktestModel: save({kind:'backtest', model, params, summary})
-    end
-    R-->>C: BacktestResult（summary + trades[]）
+  U->>TP: 点「保存为策略」(当前权重 / TopK)
+  TP->>TP: toStrategyType(modelKey) → type
+  TP->>SA: create({name, type, conditions:{weights,model}})
+  SA->>SR: POST /api/strategies
+  alt 已登录
+    SR->>SM: create(userId, {name,type,conditions})
+    SM->>DB: INSERT (conditions→JSON)
+    DB-->>SM: row
+    SM-->>SR: ok(row)
+    SR-->>SA: 200 {data:策略行}
+    SA-->>TP: 策略行
+    TP-->>U: Alert「已保存策略」(success)
+  else 未登录
+    SR-->>SA: 401 unauthorized
+    SA-->>TP: throw(未登录)
+    TP-->>U: Alert「保存失败：请先登录」(error)
+  end
 
-%% ============================================================
-%% 时序图 2：一次调参请求流（Tune）
-%% ============================================================
+---
+
 sequenceDiagram
-    participant C as 前端 TuningPanel
-    participant R as BacktestRoutes
-    participant T as TuningService
-    participant B as BacktestService
-    participant DB as Database
-    participant S as ScoreService
+  participant CLI as backfillMoneyFlow.mjs
+  participant LIB as backfillMoneyFlowLib
+  participant EP as EastmoneyProvider.client
+  participant EM as 东财 fflow
+  participant DB as money_flow 表
 
-    C->>R: POST /api/backtest/tune (TuneRequest)
-    R->>T: tune(req)
-    T->>T: expandGrid(tuneTargets) → combos[]（笛卡尔积）
-    T->>B: buildSnapshots(req)  # 仅一次：按 sampling 取交易日，物化 AS-OF-T 快照（与权重无关，含预取 nextRet）
-    B->>DB: getCalendar + getBaseSnapshotsAsOf(T) 循环
-    DB-->>B: baseByDay: Map<T, {snap, nextRet}[]>
-    B-->>T: baseByDay
-    loop 每个权重组合 combo
-        loop 每个交易日 T
-            loop 每个标的 {snap, nextRet}
-                T->>S: scoreX(snap, {weights: combo, pool})
-                S-->>T: {total, factors}
-            end
-            T->>T: 过滤/topN + 读预取 nextRet + 累计
-        end
-        T->>T: summarize → metrics(combo)
+  CLI->>DB: openDatabase(env.DB_PATH)
+  CLI->>DB: SELECT code FROM securities WHERE type='stock' (裁剪 --limit/--sample)
+  loop 每批(50只)
+    loop 每只 code
+      CLI->>LIB: backfillStock(db, provider, code)
+      LIB->>EP: fetchMoneyFlow(code, {limit:0})
+      EP->>EM: 请求历史资金流
+      EM-->>EP: klines(升序, ~250日)
+      EP-->>LIB: rows[{date,main_net_inflow(元),...}]
+      LIB->>LIB: mapFflowToMoneyFlowRow (元→万元)
+      LIB->>LIB: withRollingSums (填 3d/5d)
+      LIB->>DB: upsertMoneyFlowRows (批末, ON CONFLICT 幂等)
     end
-    T->>T: rankBy(results, objective) 取 topK
-    R-->>C: TuneResult（results: TuneCombo[]）
+    CLI->>CLI: 日志 进度/百分比/耗时
+    Note over CLI: 失败code记日志跳过，续跑
+  end
+  CLI-->>CLI: 完成；--resume 可二次续跑

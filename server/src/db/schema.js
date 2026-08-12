@@ -337,6 +337,21 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
   FOREIGN KEY (run_id) REFERENCES pipeline_runs(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_ps_run ON pipeline_steps(run_id, seq);
+
+-- 21) 回测 / 调参结果（仅汇总 + 参数，逐笔不入；落库默认开，可由 env.BACKTEST_PERSIST 关闭）
+CREATE TABLE IF NOT EXISTS backtests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER,
+  kind         TEXT NOT NULL CHECK (kind IN ('backtest','tune')),
+  model        TEXT NOT NULL,
+  params       TEXT NOT NULL,          -- JSON：请求体（model/range/topN/minScore/sampling...）
+  summary      TEXT NOT NULL,          -- JSON：summary（tune 时为最优组合 metrics）
+  objective    TEXT,                   -- tune 专用（winRate / avgRet）
+  best_weights TEXT,                   -- tune 专用：Top1 组合权重（JSON）
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_backtests_user ON backtests(user_id, kind);
 `;
 
 /**

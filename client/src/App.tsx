@@ -11,6 +11,7 @@ import StrategiesPage from './pages/StrategiesPage';
 import WatchlistPage from './pages/WatchlistPage';
 import SettingsPage from './pages/SettingsPage';
 import AnalysisCenter from './pages/AnalysisCenter';
+import BacktestPage from './pages/BacktestPage';
 import NotFound from './pages/NotFound';
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/strategies" element={<StrategiesPage />} />
         <Route path="/watchlist" element={<WatchlistPage />} />
         <Route path="/analysis" element={<AnalysisCenter />} />
+        <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<NotFound />} />

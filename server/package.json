@@ -9,6 +9,7 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "seed": "node src/seed/run.js",
+    "backfill:moneyflow": "node scripts/backfillMoneyFlow.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

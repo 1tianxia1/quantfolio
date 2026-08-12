@@ -11,6 +11,7 @@ import StarIcon from '@mui/icons-material/Star';
 import FolderIcon from '@mui/icons-material/Folder';
 import InsightsIcon from '@mui/icons-material/Insights';
 import SettingsIcon from '@mui/icons-material/Settings';
+import ScienceIcon from '@mui/icons-material/Science';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
   { key: 'strategies', label: '我的策略', icon: <FolderIcon fontSize="small" />, path: '/strategies' },
   { key: 'watchlist', label: '我的自选', icon: <StarIcon fontSize="small" />, path: '/watchlist' },
   { key: 'analysis', label: '智能分析中心', icon: <InsightsIcon fontSize="small" />, path: '/analysis' },
+  { key: 'backtest', label: '回测 / 调参', icon: <ScienceIcon fontSize="small" />, path: '/backtest' },
   { key: 'settings', label: '模型设置', icon: <SettingsIcon fontSize="small" />, path: '/settings', requireLogin: true },
 ];
 

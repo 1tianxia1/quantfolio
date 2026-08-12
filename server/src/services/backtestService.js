@@ -228,9 +228,43 @@ export function createBacktestService(db) {
     };
   }
 
-  /** 模型 dataCaveat 标记 */
-  function getDataCaveat(model) {
-    return isMorningModel(model) ? MORNING_DATA_CAVEAT : null;
+  /**
+   * 统计早盘辅助表（money_flow）在回测区间内的覆盖度。
+   * expected = 股票数 × 区间内不同交易日数；actual = 区间内 money_flow 有 main_net_inflow 的行数。
+   * @param {import('../db/driver.js').Database} db
+   * @param {[string, string]} range [start, end]
+   * @returns {{expected:number, actual:number, coverage:number}}
+   */
+  function computeMorningAuxCoverage(db, range) {
+    const [start, end] = range || [null, null];
+    const stockCount = db.get("SELECT COUNT(*) AS n FROM securities WHERE type = 'stock'")?.n ?? 0;
+    const dayCount = db.get(
+      `SELECT COUNT(DISTINCT trade_date) AS n FROM daily_quotes WHERE trade_date BETWEEN ? AND ?`,
+      [start, end],
+    )?.n ?? 0;
+    const expected = stockCount * dayCount;
+    const actual = db.get(
+      `SELECT COUNT(*) AS n FROM money_flow WHERE trade_date BETWEEN ? AND ? AND main_net_inflow IS NOT NULL`,
+      [start, end],
+    )?.n ?? 0;
+    const coverage = expected > 0 ? actual / expected : 0;
+    return { expected, actual, coverage };
+  }
+
+  /**
+   * 早盘 dataCaveat 动态生成（保住「永远非空字符串」硬约束）。
+   * - coverage ≥ 0.5：money_flow 已由回填脚本补全真实历史 → 如实标注（auction/limit/sector 仍派生）
+   * - 否则：兜底静态串（稀疏未回填）
+   * @param {import('../db/driver.js').Database} db
+   * @param {[string, string]} range [start, end]
+   * @returns {string} 非空字符串
+   */
+  function buildMorningDataCaveat(db, range) {
+    const { coverage } = computeMorningAuxCoverage(db, range);
+    if (coverage >= 0.5) {
+      return 'morning aux partial: money_flow real, auction/limit/sector derived';
+    }
+    return MORNING_DATA_CAVEAT;
   }
 
   /** 从请求中提取落库用 params（不含 userId / 内部字段） */
@@ -361,7 +395,8 @@ export function createBacktestService(db) {
     }
 
     const summary = summarize(trades);
-    const dataCaveat = getDataCaveat(model);
+    // 早盘动态 dataCaveat（覆盖度决定静态/真实串）；closing 系保持 null
+    const dataCaveat = isMorningModel(model) ? buildMorningDataCaveat(db, req.range) : null;
 
     // 落库（默认开；仅汇总 + 参数，逐笔不入）
     if (process.env.BACKTEST_PERSIST !== 'false') {

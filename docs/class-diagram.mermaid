@@ -1,99 +1,51 @@
 classDiagram
-    class BacktestRequest {
-      +model: 'morning'|'closing'|'closingPipeline'|'morningPipeline'
-      +range: [string, string]
-      +topN: number
-      +minScore: number
-      +weightsOverride: object|null
-      +nextDayReturnField: string
-      +sampling: {step:number}|null
-    }
-    class BacktestResult {
-      +model: string
-      +dataCaveat: string|null
-      +summary: BacktestSummary
-      +trades: TradeRow[]
-      +params: object
-    }
-    class BacktestSummary {
-      +days: number
-      +picks: number
-      +winRate: number
-      +avgNextRet: number
-      +avgWinRet: number
-      +avgLossRet: number
-      +retDistribution: RetBucket[]
-    }
-    class TradeRow {
-      +tradeDate: string
-      +code: string
-      +name: string
-      +score: number
-      +nextRet: number
-    }
-    class TuneRequest {
-      +model: string
-      +range: [string,string]
-      +topN: number
-      +minScore: number
-      +tuneTargets: object
-      +objective: 'winRate'|'avgRet'
-      +sampling: {step:number}
-      +topK: number
-    }
-    class TuneResult {
-      +model: string
-      +objective: string
-      +combinations: number
-      +results: TuneCombo[]
-      +dataCaveat: string|null
-    }
-    class TuneCombo {
-      +rank: number
-      +weights: object
-      +metrics: BacktestSummary
-    }
-    class BacktestService {
-      +run(req: BacktestRequest): BacktestResult
-      +buildSnapshots(req): Map~date,Snap[]~
-      -getCalendar(range): string[]
-      -getBaseSnapshotsAsOf(T): Snap[]
-      -getAsOfPool(T): Pool
-      -scoreAll(snaps, model, weights, pool): Scored[]
-      -summarize(trades): BacktestSummary
-    }
-    class TuningService {
-      +tune(req: TuneRequest): TuneResult
-      -expandGrid(targets): object[]
-      -evaluateCombo(combo, base): BacktestSummary
-    }
-    class ScoreService {
-      +scoreMorning(snap, ctx): ScoreDetail
-      +scoreClosing(snap, weights?): ScoreDetail
-      +scoreClosingPipeline(snap): ScoreDetail
-      +scoreMorningPipeline(snap, ctx): ScoreDetail
-    }
-    class BacktestModel {
-      +save(row): number
-      +list(userId, kind): BacktestRecord[]
-      +getById(id): BacktestRecord
-    }
-    class BacktestRoutes {
-      +POST /backtest/run
-      +POST /backtest/tune
-      +GET /backtest/models
-    }
-    class Database {
-      +all(sql, params): object[]
-      +get(sql, params): object
-      +prepare(sql): Statement
-      +transaction(fn): fn
-    }
+  class BacktestService {
+    +run(req, userId)
+    +buildSnapshots(req)
+    +getModels()
+    -computeMorningAuxCoverage(db, range)
+    -buildMorningDataCaveat(db, range)
+  }
+  class MoneyFlowTable {
+    +code TEXT
+    +trade_date TEXT
+    +main_net_inflow REAL
+    +net_inflow_3d REAL
+    +net_inflow_5d REAL
+    +data_origin TEXT
+  }
+  class EastmoneyProvider {
+    +client
+    +getQuote(code)
+  }
+  class EmClient {
+    +fetchMoneyFlow(code, opts)
+  }
+  class BackfillScript {
+    +main(opts)
+    +backfillStock(db, provider, code)
+  }
+  class BackfillLib {
+    +mapFflowToMoneyFlowRow(code, rawRow)
+    +withRollingSums(rows)
+    +upsertMoneyFlowRows(db, rows)
+  }
+  class StrategyModel {
+    +create(userId, {name,type,conditions})
+  }
+  class TuningPanel {
+    +toStrategyType(key)
+    +handleSave(weights, suffix)
+  }
+  class StrategyApi {
+    +create(data)
+  }
 
-    BacktestRoutes --> BacktestService : calls
-    BacktestRoutes --> TuningService : calls
-    BacktestService --> ScoreService : score each snap
-    BacktestService --> Database : read as-of-T
-    BacktestService --> BacktestModel : optional save
-    TuningService --> BacktestService : buildSnapshots + run per combo
-    BacktestModel ..> Database : read/write
+  BacktestService ..> MoneyFlowTable : 读覆盖度/AS-OF JOIN
+  EastmoneyProvider *-- EmClient : 封装
+  BackfillScript ..> EastmoneyProvider : 取 client.fetchMoneyFlow
+  BackfillScript ..> BackfillLib : 映射+upsert
+  BackfillLib ..> MoneyFlowTable : 幂等 upsert
+  BackfillScript ..> MoneyFlowTable : 跳过已回填(code)
+  TuningPanel ..> StrategyApi : 保存策略
+  StrategyApi ..> StrategyModel : POST /api/strategies

@@ -53,10 +53,11 @@ function createHttpClient(timeout: number) {
 const http = createHttpClient(30000);
 
 /**
- * 长超时实例（90s）：图片识别等视觉模型接口专用（D8）。
- * 后端视觉超时为 60s，若用默认 30s 前端必然先报错。
+ * 长超时实例（180s）：图片识别等视觉模型接口专用（D8），同时供回测/调参同步请求使用。
+ * 243 交易日全量回测在本机（node:sqlite，无 better-sqlite3 原生绑定）实测约 60~120s，
+ * 故放宽至 180s 避免前端先超时（后端本机同步方案，见系统设计与 QA 协同约定）。
  */
-export const httpLong = createHttpClient(90000);
+export const httpLong = createHttpClient(180000);
 
 /**
  * 解包统一信封；非 success 抛错。

@@ -102,3 +102,14 @@ export const CLOSING_KDJ_SCORES = {
   jOverbought: 10,  // J>100
   neutral: 50,      // 其余
 };
+
+/**
+ * 各模型默认权重来源（供前端滑块与调参白名单复用）。
+ * 加权模型（morning/closing）引用既有常量；点数制管线模型（*Pipeline）忽略权重，记为 null。
+ */
+export const DEFAULT_WEIGHTS_BY_MODEL = {
+  morning: MORNING_WEIGHTS,
+  closing: CLOSING_WEIGHTS,
+  closingPipeline: null,
+  morningPipeline: null,
+};

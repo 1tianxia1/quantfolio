@@ -21,6 +21,7 @@ import { createStrategyRoutes } from './routes/strategyRoutes.js';
 import { createAiRoutes } from './routes/aiRoutes.js';
 import { createMarketRoutes } from './routes/marketRoutes.js';
 import { createAnalysisRoutes } from './routes/analysisRoutes.js';
+import { createBacktestRoutes } from './routes/backtestRoutes.js';
 
 /**
  * 创建 Express 应用
@@ -59,6 +60,8 @@ export function createApp(db) {
   app.use('/api/market', createMarketRoutes(db));
   // 智能分析中心（骨架：capabilities 可用，quant/signal/pipeline 待 T03-T05 填充）
   app.use('/api/analysis', createAnalysisRoutes(db));
+  // 回测 + 调参
+  app.use('/api/backtest', createBacktestRoutes(db));
 
   // 生产静态文件托管（构建产物 client/dist）
   if (HAS_DIST) {
