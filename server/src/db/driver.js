@@ -68,6 +68,19 @@ class Statement {
     return this.stmt.all(...params);
   }
 
+  /**
+   * 流式迭代（逐行产出，不全量物化）—— 用于超大数据集扫描（如 264 万行 daily_quotes）
+   * 原生 better-sqlite3 / node:sqlite 直接支持；sql.js 兜底路径退化为数组迭代（内存代价同 all）。
+   * @returns {IterableIterator<object>}
+   */
+  iterate(...params) {
+    if (typeof this.stmt.iterate === 'function') {
+      return this.stmt.iterate(...params);
+    }
+    // 驱动不支持原生迭代（如 sql.js 兜底路径）：退化为数组迭代器
+    return this.stmt.all(...params)[Symbol.iterator]();
+  }
+
   run(...params) {
     const r = this.stmt.run(...params);
     return {
@@ -122,6 +135,29 @@ class Database {
 
   run(sql, params = []) {
     return this.prepare(sql).run(...params);
+  }
+
+  /**
+   * 按 code 范围删除某张表的数据（用于「仅对同步标的做派生重算」时，
+   * 不误删未同步标的的派生行）。分块执行以规避单条 IN 语句的绑定参数上限。
+   * @param {string} table 表名（仅接受内部白名单，防注入）
+   * @param {string[]} codes code 列表；空数组/undefined 时退化为整表删除
+   */
+  deleteByCodes(table, codes) {
+    const ALLOWED = new Set([
+      'tech_indicators', 'money_flow', 'auction_data', 'limit_records', 'hot_sectors',
+    ]);
+    if (!ALLOWED.has(table)) throw new Error(`deleteByCodes: 非法表名 ${table}`);
+    if (!codes || !codes.length) {
+      this.exec(`DELETE FROM ${table}`);
+      return;
+    }
+    const CH = 400;
+    for (let i = 0; i < codes.length; i += CH) {
+      const slice = codes.slice(i, i + CH);
+      const ph = slice.map(() => '?').join(',');
+      this.run(`DELETE FROM ${table} WHERE code IN (${ph})`, slice);
+    }
   }
 
   transaction(fn) {

@@ -96,7 +96,10 @@ export function computeIndicators(bars) {
  */
 export function seedIndicators(db, barsByCode) {
   const tx = db.transaction(() => {
-    db.exec('DELETE FROM tech_indicators');
+    // 仅删除「本次输入范围内」的 code，避免误删未同步标的的已有派生数据（内存友好 + 增量重算）
+    const codes = [...barsByCode.keys()];
+    if (codes.length) db.deleteByCodes('tech_indicators', codes);
+    else db.exec('DELETE FROM tech_indicators');
     for (const [code, bars] of barsByCode) {
       const rows = computeIndicators(bars);
       for (const r of rows) {

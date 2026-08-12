@@ -1,10 +1,10 @@
 // ============================================================
-// 顶栏：Logo/搜索框/主题切换/用户菜单
+// 顶栏：Logo/搜索框/实时行情状态/主题切换/用户菜单
 // ============================================================
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   AppBar, Toolbar, Box, TextField, InputAdornment, IconButton,
-  Avatar, Menu, MenuItem, Tooltip, Typography, Button, Divider,
+  Avatar, Menu, MenuItem, Tooltip, Typography, Button, Divider, CircularProgress,
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
 import SearchIcon from '@mui/icons-material/Search';
@@ -12,15 +12,25 @@ import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import LogoutIcon from '@mui/icons-material/Logout';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { keyframes } from '@emotion/react';
 import { useUiStore } from '../../store/uiStore';
 import { useAuthStore } from '../../store/authStore';
+import { useLastRefresh, isMarketOpenNow, REFRESH_INTERVAL_MS } from '../../store/realtimeStore';
 import { APP_NAME } from '@shared/constants';
 import { marketApi } from '../../api/market';
 import { authApi } from '../../api/auth';
 import { useSnackbar } from '../common/SnackbarProvider';
 import { useDebounce } from '../../hooks/useDebounce';
-import type { SearchItem } from '../../api/market';
+import type { SearchItem, MarketStatus } from '../../api/market';
+
+/** 实时点脉冲动画 */
+const pulse = keyframes`
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+  100% { opacity: 1; transform: scale(1); }
+`;
 
 export default function TopBar() {
   const navigate = useNavigate();
@@ -33,6 +43,23 @@ export default function TopBar() {
   const [results, setResults] = useState<SearchItem[]>([]);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const debouncedQ = useDebounce(q, 300);
+
+  // 实时行情状态 + 顶栏刷新
+  const [mkt, setMkt] = useState<MarketStatus | null>(null);
+  const [topRefreshing, setTopRefreshing] = useState(false);
+  const topTimer = useRef<number | null>(null);
+
+  // 实时刷新倒计时（读取组合页最近一次静默刷新时间）
+  const lastRefresh = useLastRefresh();
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((x) => x + 1), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  void tick;
+  const open = isMarketOpenNow();
+  const secondsAgo = lastRefresh ? Math.floor((Date.now() - lastRefresh) / 1000) : 0;
+  const nextIn = Math.max(0, Math.round(REFRESH_INTERVAL_MS / 1000) - secondsAgo);
 
   // 防抖搜索：代码/名称模糊
   useEffect(() => {
@@ -47,6 +74,16 @@ export default function TopBar() {
       .catch(() => { if (!cancelled) setResults([]); });
     return () => { cancelled = true; };
   }, [debouncedQ]);
+
+  // 加载实时行情状态 + 卸载清理轮询
+  useEffect(() => {
+    let cancelled = false;
+    marketApi.status().then((s) => { if (!cancelled) setMkt(s); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => () => {
+    if (topTimer.current) window.clearInterval(topTimer.current);
+  }, []);
 
   const gotoStock = (code: string) => {
     setQ('');
@@ -65,6 +102,32 @@ export default function TopBar() {
     clearAuth();
     snackbar.show('已退出登录', 'info');
     navigate('/login');
+  };
+
+  const handleTopRefresh = async () => {
+    if (!mkt?.realtimeEnabled) {
+      snackbar.show('请先在设置中开启实时行情', 'info');
+      return;
+    }
+    setTopRefreshing(true);
+    try {
+      await marketApi.refresh({ limit: 120 });
+      if (topTimer.current) window.clearInterval(topTimer.current);
+      topTimer.current = window.setInterval(async () => {
+        try {
+          const s = await marketApi.status();
+          setMkt(s);
+          if (s.refresh.status === 'done' || s.refresh.status === 'failed') {
+            if (topTimer.current) window.clearInterval(topTimer.current);
+            setTopRefreshing(false);
+            snackbar.show(s.refresh.status === 'done' ? '行情刷新完成' : '行情刷新失败', s.refresh.status === 'done' ? 'success' : 'error');
+          }
+        } catch (_e) { /* 继续轮询 */ }
+      }, 2000);
+    } catch (e) {
+      setTopRefreshing(false);
+      snackbar.show((e as Error).message || '刷新失败', 'error');
+    }
   };
 
   return (
@@ -130,6 +193,53 @@ export default function TopBar() {
         </Box>
 
         <Box sx={{ flex: 1 }} />
+
+        {/* 实时行情状态 + 一键刷新 */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Box
+            sx={{
+              width: 8, height: 8, borderRadius: '50%',
+              bgcolor: mkt?.realtimeEnabled
+                ? open
+                  ? 'success.main'
+                  : 'warning.main'
+                : 'text.disabled',
+              animation: mkt?.realtimeEnabled && open ? `${pulse} 1.4s ease-in-out infinite` : 'none',
+            }}
+            title={
+              mkt?.realtimeEnabled
+                ? open
+                  ? '实时行情已连接（东方财富）· 每 15 秒自动刷新'
+                  : '实时行情已连接（东方财富）· 当前为盘中休市时段'
+                : '本地缓存数据'
+            }
+          />
+          <Typography
+            variant="caption"
+            color={mkt?.realtimeEnabled ? (open ? 'success.main' : 'warning.main') : 'text.secondary'}
+            sx={{ whiteSpace: 'nowrap', fontWeight: mkt?.realtimeEnabled ? 600 : 400 }}
+          >
+            {mkt?.realtimeEnabled
+              ? open
+                ? `实时 · ${nextIn}s 后刷新`
+                : '盘中休市'
+              : '本地'}
+          </Typography>
+          {isLoggedIn() && (
+            <Tooltip title={topRefreshing ? '刷新中…' : '刷新真实行情'}>
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={handleTopRefresh}
+                  disabled={topRefreshing || !mkt?.realtimeEnabled}
+                  sx={{ color: 'text.secondary' }}
+                >
+                  {topRefreshing ? <CircularProgress size={14} /> : <RefreshIcon fontSize="small" />}
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+        </Box>
 
         {/* 主题切换 */}
         <Tooltip title={mode === 'dark' ? '切换浅色主题' : '切换深色主题'}>

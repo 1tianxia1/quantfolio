@@ -11,7 +11,9 @@ import { inferBoard } from './securities.js';
  */
 export function seedLimitRecords(db, items, barsByCode) {
   const tx = db.transaction(() => {
-    db.exec('DELETE FROM limit_records');
+    const codes = items.map((i) => i.code);
+    if (codes.length) db.deleteByCodes('limit_records', codes);
+    else db.exec('DELETE FROM limit_records');
     let realCount = 0;
     let derivedCount = 0;
 

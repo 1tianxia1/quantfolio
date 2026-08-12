@@ -28,11 +28,25 @@ export function createPortfolioService(db) {
     const quoteMap = new Map(model.getQuotes(codes).map((q) => [q.code, q]));
     const secMap = new Map(model.list().map((s) => [s.code, s]));
 
+    // 场外基金净值（按代码取各自最新披露日）+ 场内 ETF 最新市价（避免全局最大交易日漏匹配）
+    const fundCodes = holdings
+      .filter((h) => h.asset_class === ASSET_CLASS.FUND && h.code)
+      .map((h) => h.code);
+    const fundNavMap = new Map(model.getFundNav(fundCodes).map((f) => [f.code, f]));
+    const fundQuoteMap = new Map(
+      fundCodes
+        .map((c) => [c, model.getLatestQuote(c)])
+        .filter(([, v]) => v && Number.isFinite(v.close) && v.close > 0),
+    );
+
     let totalAsset = 0;
     let totalCost = 0;
     let dayProfit = 0;
 
-    const enriched = holdings.map((h) => {
+    const enriched = holdings.map((h) =>
+      applyOcrProfitOverrides(
+        h,
+        (() => {
       // D5 防御：历史脏数据/极端数值（quantity 或 cost_price 非有限）不参与汇总，
       // 否则 totalAsset 溢出成 null，导致汇总与再平衡整体瘫痪。该行按 0 值处理并标记。
       if (!Number.isFinite(Number(h.quantity)) || !Number.isFinite(Number(h.cost_price))) {
@@ -78,11 +92,89 @@ export function createPortfolioService(db) {
         };
       }
 
-      // ★ 基金特殊估值：图片导入时 quantity 记为「持有金额」，current_price 固定视为 1。
-      // 场外基金（ETF 联接、QDII、货币基金等）在本地 securities/行情表中通常没有报价，
-      // 若按股票逻辑 fallback 到 cost_price，会导致市值=成本、盈亏永远为 0。
+      // ★ 基金估值（三级口径）：
+      //   1) 场外基金（联接/LOF/QDII）：用 fund_nav 净值作为现价，当日盈亏按净值日涨跌幅计
+      //   2) 场内 ETF（已有 daily_quotes 市价）：沿用股票口径（现价=市价，昨收=pre_close）
+      //   3) 兜底（图片导入金额模型 / 暂未同步净值）：current_price=1，当日盈亏置 0
       if (h.asset_class === ASSET_CLASS.FUND) {
-        const marketValue = h.quantity;
+        const fn = fundNavMap.get(h.code);
+        if (fn && Number.isFinite(fn.nav) && fn.nav > 0) {
+          const currentPrice = fn.nav;
+          const marketValue = h.quantity * currentPrice;
+          const costAmount = h.quantity * h.cost_price;
+          const profit = marketValue - costAmount;
+          const profitRate = costAmount ? (profit / costAmount) * 100 : 0;
+          const prev = fn.pre_nav;
+          const hasDay = Number.isFinite(prev) && prev > 0;
+          const hDayProfit = hasDay ? h.quantity * (fn.nav - prev) : 0;
+          const hDayProfitRate = hasDay
+            ? (fn.nav - prev) / prev * 100
+            : Number.isFinite(fn.nav_chg_pct) ? fn.nav_chg_pct : null;
+          totalAsset += marketValue;
+          totalCost += costAmount;
+          dayProfit += hDayProfit;
+          return {
+            ...h,
+            current_price: round4(currentPrice),
+            market_value: round4(marketValue),
+            cost_amount: round4(costAmount),
+            profit: round4(profit),
+            profit_rate: round4(profitRate),
+            day_profit: round4(hDayProfit),
+            day_profit_rate: round4(hDayProfitRate),
+            current_pct: 0,
+            target_pct: null,
+            deviation_pct: null,
+            deviation_ratio: null,
+            industry: null,
+            sector: null,
+            quote_date: fn.nav_date,
+            data_origin: fn.is_estimate ? 'mixed' : 'real',
+          };
+        }
+
+        // 场内 ETF / 上市基金：以行情市价为现价（与股票同口径）
+        const eq = fundQuoteMap.get(h.code) || quoteMap.get(h.code);
+        if (eq && Number.isFinite(eq.close) && eq.close > 0) {
+          const currentPrice = eq.close;
+          const marketValue = h.quantity * currentPrice;
+          const costAmount = h.quantity * h.cost_price;
+          const profit = marketValue - costAmount;
+          const profitRate = costAmount ? (profit / costAmount) * 100 : 0;
+          const hasDay = eq.pre_close != null;
+          const hDayProfit = hasDay ? h.quantity * (eq.close - eq.pre_close) : 0;
+          const hDayProfitRate = hasDay && eq.pre_close
+            ? (eq.close - eq.pre_close) / eq.pre_close * 100
+            : null;
+          totalAsset += marketValue;
+          totalCost += costAmount;
+          dayProfit += hDayProfit;
+          return {
+            ...h,
+            current_price: round4(currentPrice),
+            market_value: round4(marketValue),
+            cost_amount: round4(costAmount),
+            profit: round4(profit),
+            profit_rate: round4(profitRate),
+            day_profit: round4(hDayProfit),
+            day_profit_rate: round4(hDayProfitRate),
+            current_pct: 0,
+            target_pct: null,
+            deviation_pct: null,
+            deviation_ratio: null,
+            industry: eq.sector ?? null,
+            sector: eq.sector ?? null,
+            quote_date: eq.trade_date ?? null,
+            data_origin: eq.data_origin ?? 'real',
+          };
+        }
+
+        // 兜底：图片导入金额模型 / 暂未同步净值
+        // 优先用导入回填的截现价（如场内 ETF 被当基金处理时），否则按 1（金额模型）
+        const fundCurrent = h.current_price != null && Number.isFinite(Number(h.current_price)) && Number(h.current_price) > 0
+          ? Number(h.current_price)
+          : 1;
+        const marketValue = h.quantity * fundCurrent;
         const costAmount = h.quantity * h.cost_price;
         const profit = marketValue - costAmount;
         const profitRate = costAmount ? (profit / costAmount) * 100 : 0;
@@ -90,7 +182,7 @@ export function createPortfolioService(db) {
         totalCost += costAmount;
         return {
           ...h,
-          current_price: 1,
+          current_price: round4(fundCurrent),
           market_value: round4(marketValue),
           cost_amount: round4(costAmount),
           profit: round4(profit),
@@ -110,7 +202,13 @@ export function createPortfolioService(db) {
 
       const quote = quoteMap.get(h.code);
       const sec = secMap.get(h.code);
-      const currentPrice = quote?.close ?? h.cost_price; // 无行情按成本价估值（净值待更新）
+      // ★ 估值优先级：导入回填的截现价 > 行情市价 > 成本价
+      // 对本地行情库未覆盖的标的（如券商 App 截图里的黄金ETF/小票），
+      // 用截现价才能与用户导入的数据一致；否则会回退成本价，市值/盈亏失真。
+      const importedPrice = h.current_price != null && Number.isFinite(Number(h.current_price)) && Number(h.current_price) > 0
+        ? Number(h.current_price)
+        : null;
+      const currentPrice = importedPrice != null ? importedPrice : (quote?.close ?? h.cost_price);
       const marketValue = h.quantity * currentPrice;
       const costAmount = h.quantity * h.cost_price;
       const profit = marketValue - costAmount;
@@ -141,7 +239,27 @@ export function createPortfolioService(db) {
         quote_date: quote?.trade_date ?? null,
         data_origin: quote?.data_origin ?? sec?.data_origin ?? 'real',
       };
-    });
+    })(),
+      ),
+    );
+
+    /**
+     * 截图 OCR 回填的盈亏字段优先于重新计算，保证「图片导入的持仓」与券商 App 截图完全一致。
+     * 仅当该字段在 holdings 表确有有限值时才覆盖；否则保留计算值（行情 / 净值口径）。
+     */
+    function applyOcrProfitOverrides(h, v) {
+      const ocrProfit = h.profit != null && Number.isFinite(Number(h.profit)) ? Number(h.profit) : null;
+      const ocrProfitRate = h.profit_rate != null && Number.isFinite(Number(h.profit_rate)) ? Number(h.profit_rate) : null;
+      const ocrDayProfit = h.day_profit != null && Number.isFinite(Number(h.day_profit)) ? Number(h.day_profit) : null;
+      const ocrDayProfitRate = h.day_profit_rate != null && Number.isFinite(Number(h.day_profit_rate)) ? Number(h.day_profit_rate) : null;
+      return {
+        ...v,
+        profit: ocrProfit != null ? round4(ocrProfit) : v.profit,
+        profit_rate: ocrProfitRate != null ? round4(ocrProfitRate) : v.profit_rate,
+        day_profit: ocrDayProfit != null ? round4(ocrDayProfit) : v.day_profit,
+        day_profit_rate: ocrDayProfitRate != null ? round4(ocrDayProfitRate) : v.day_profit_rate,
+      };
+    }
 
     // 回填当前占比（先求和后舍入）
     for (const h of enriched) {
@@ -241,6 +359,70 @@ export function createPortfolioService(db) {
   addHolding(userId, payload) {
     const h = portfolio.createHolding(userId, payload);
     return h;
+  },
+
+  /**
+   * 按 code 合并 upsert：同用户同 code 已存在时合并数量并重新计算加权成本价，否则新增。
+   * 用于 CSV/图片导入等批量场景，避免同一证券出现多条持仓。
+   * @returns {{ holding: object, created: boolean }}
+   */
+  upsertHolding(userId, payload) {
+    const code = payload.code ?? null;
+    const incomingQty = Number(payload.quantity) || 0;
+    const incomingCost = Number(payload.cost_price) || 0;
+    // 导入时可能携带截图现价/盈亏（图片导入），合并/新增都尽量保留
+    const incomingCurrent = payload.current_price != null && Number.isFinite(Number(payload.current_price))
+      ? Number(payload.current_price)
+      : null;
+    const incomingProfit = payload.profit != null && Number.isFinite(Number(payload.profit)) ? Number(payload.profit) : null;
+    const incomingProfitRate = payload.profit_rate != null && Number.isFinite(Number(payload.profit_rate)) ? Number(payload.profit_rate) : null;
+    const incomingDayProfit = payload.day_profit != null && Number.isFinite(Number(payload.day_profit)) ? Number(payload.day_profit) : null;
+    const incomingDayProfitRate = payload.day_profit_rate != null && Number.isFinite(Number(payload.day_profit_rate)) ? Number(payload.day_profit_rate) : null;
+
+    if (code) {
+      const existing = portfolio.findHoldingByCode(userId, code);
+      if (existing) {
+        const existingQty = Number(existing.quantity) || 0;
+        const existingCost = Number(existing.cost_price) || 0;
+        const totalQty = existingQty + incomingQty;
+        const blendedCost = totalQty > 0
+          ? (existingQty * existingCost + incomingQty * incomingCost) / totalQty
+          : incomingCost;
+        // 现价/盈亏：以新导入的截图表为准（若有），否则保留原值
+        const mergedCurrent = incomingCurrent != null ? incomingCurrent
+          : (existing.current_price != null ? Number(existing.current_price) : null);
+        const mergedProfit = incomingProfit != null ? incomingProfit
+          : (existing.profit != null ? Number(existing.profit) : null);
+        const mergedProfitRate = incomingProfitRate != null ? incomingProfitRate
+          : (existing.profit_rate != null ? Number(existing.profit_rate) : null);
+        const mergedDayProfit = incomingDayProfit != null ? incomingDayProfit
+          : (existing.day_profit != null ? Number(existing.day_profit) : null);
+        const mergedDayProfitRate = incomingDayProfitRate != null ? incomingDayProfitRate
+          : (existing.day_profit_rate != null ? Number(existing.day_profit_rate) : null);
+        const holding = portfolio.updateHolding(userId, existing.id, {
+          code,
+          name: payload.name || existing.name,
+          asset_class: payload.asset_class || existing.asset_class,
+          quantity: round4(totalQty),
+          cost_price: round4(blendedCost),
+          current_price: mergedCurrent,
+          profit: mergedProfit,
+          profit_rate: mergedProfitRate,
+          day_profit: mergedDayProfit,
+          day_profit_rate: mergedDayProfitRate,
+        });
+        return { holding, created: false };
+      }
+    }
+    const holding = portfolio.createHolding(userId, {
+      ...payload,
+      current_price: incomingCurrent,
+      profit: incomingProfit,
+      profit_rate: incomingProfitRate,
+      day_profit: incomingDayProfit,
+      day_profit_rate: incomingDayProfitRate,
+    });
+    return { holding, created: true };
   },
 
   updateHolding(userId, id, payload) {

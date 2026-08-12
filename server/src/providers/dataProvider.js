@@ -1,9 +1,10 @@
 // ============================================================
 // DataProvider 适配器模式
-// 接口定义 + getProvider 工厂（env.DATA_PROVIDER 切换）
+// 接口定义 + getProvider 工厂（运行时 meta_kv('data_provider') 覆盖 env.DATA_PROVIDER）
 // 业务层只依赖本接口，不依赖具体实现
 // ============================================================
 import env from '../config/env.js';
+import { getEffectiveProviderName } from '../config/providerConfig.js';
 import { createSqliteProvider } from './sqliteProvider.js';
 import { createHttpProvider } from './httpProvider.js';
 import { createEastmoneyProvider } from './eastmoneyProvider.js';
@@ -33,7 +34,8 @@ export const SUPPORTED_PROVIDERS = ['sqlite', 'http', 'eastmoney'];
  * @returns {object} DataProvider 实现
  */
 export function getProvider(db, options = {}) {
-  const name = env.DATA_PROVIDER || 'sqlite';
+  // 运行时数据源：meta_kv('data_provider') 覆盖 env.DATA_PROVIDER，使设置页开关可热切换
+  const name = db ? getEffectiveProviderName(db) : (env.DATA_PROVIDER || 'sqlite');
   switch (name) {
     case 'sqlite':
       return createSqliteProvider(db);

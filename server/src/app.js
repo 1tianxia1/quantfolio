@@ -1,11 +1,18 @@
 // ============================================================
-// Express 应用装配：json/cors/路由/错误兜底
+// Express 应用装配：json/cors/路由/错误兜底 + 生产静态托管
 // ============================================================
 import express from 'express';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import cors from 'cors';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
 import { ok } from './util/response.js';
 import env from './config/env.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DIST_DIR = path.join(__dirname, '../../client/dist');
+const HAS_DIST = fs.existsSync(DIST_DIR);
 
 import { createAuthRoutes } from './routes/authRoutes.js';
 import { createPortfolioRoutes } from './routes/portfolioRoutes.js';
@@ -52,6 +59,16 @@ export function createApp(db) {
   app.use('/api/market', createMarketRoutes(db));
   // 智能分析中心（骨架：capabilities 可用，quant/signal/pipeline 待 T03-T05 填充）
   app.use('/api/analysis', createAnalysisRoutes(db));
+
+  // 生产静态文件托管（构建产物 client/dist）
+  if (HAS_DIST) {
+    app.use(express.static(DIST_DIR, { maxAge: '7d', index: false }));
+    // SPA fallback：前端路由（如 /portfolio）非 API 请求一律返回 index.html
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api/')) return next();
+      res.sendFile(path.join(DIST_DIR, 'index.html'));
+    });
+  }
 
   // 兜底
   app.use(notFoundHandler);

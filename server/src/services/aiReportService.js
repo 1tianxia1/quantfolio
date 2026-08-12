@@ -84,6 +84,73 @@ export function createAiReportService(db) {
     return toReport(row, false, generatedAt, aiMeta);
   }
 
+  /**
+   * 组合诊断 —— SSE 流式版本
+   * @param {import('express').Response} res
+   * @param {number|null} userId
+   * @param {{ force_refresh?: boolean }} opts
+   */
+  async function diagnoseStream(res, userId, { force_refresh = false } = {}) {
+    const resolved = resolveAiConfig(userAiConfig, userId);
+    if (resolved.notConfigured) {
+      writeSse(res, 'error', { message: '你尚未配置 AI 模型。请前往「模型设置」填写你自己的 API Key 后，方可使用 AI 分析功能。' });
+      res.end();
+      return;
+    }
+
+    const tradeDate = model.latestTradeDate() || new Date().toISOString().slice(0, 10);
+    const summary = portfolio.buildSummary(userId);
+    const hash = snapshotHash(summary.holdings);
+    const refKey = `${hash}`;
+
+    if (!force_refresh) {
+      const cached = reports.getCached(userId, REPORT_TYPE.PORTFOLIO_DIAGNOSIS, refKey, tradeDate);
+      if (cached) {
+        writeSse(res, 'chunk', { delta: '', content: cached.content, cached: true });
+        writeSse(res, 'done', { content: cached.content, aiMeta: resolved.aiMeta });
+        res.end();
+        return;
+      }
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const prompt = portfolioDiagnosisPrompt({ summary, concentration: summary.concentration });
+    const { aiConfig, aiMeta } = resolved;
+    let content = '';
+    let generatedAt = new Date().toISOString();
+    try {
+      content = await callLLM(prompt, {
+        aiConfig,
+        onDelta: (delta, full) => {
+          writeSse(res, 'chunk', { delta, content: full });
+        },
+      });
+    } catch (err) {
+      content = localFallback(REPORT_TYPE.PORTFOLIO_DIAGNOSIS, { summary, concentration: summary.concentration });
+      writeSse(res, 'chunk', { delta: content, content });
+      writeSse(res, 'error', { message: err.message || 'AI 请求失败，已降级为本地规则版' });
+    }
+
+    const row = reports.upsert(userId, REPORT_TYPE.PORTFOLIO_DIAGNOSIS, refKey, tradeDate, content);
+    writeSse(res, 'done', {
+      content,
+      generatedAt: generatedAt || row.created_at,
+      cached: false,
+      aiMeta,
+    });
+    res.end();
+  }
+
+  function writeSse(res, event, data) {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+
   /** 早盘点评（按交易日缓存，ref_key='daily'） */
   async function morningComment(userId, { items = [], force_refresh = false } = {}) {
     const resolved = resolveAiConfig(userAiConfig, userId);
@@ -147,5 +214,5 @@ export function createAiReportService(db) {
     };
   }
 
-  return { diagnose, morningComment, closingInterpret };
+  return { diagnose, diagnoseStream, morningComment, closingInterpret };
 }

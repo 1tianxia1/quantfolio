@@ -64,6 +64,15 @@ export function createAiRoutes(db) {
     } catch (e) { next(e); }
   });
 
+  // 组合诊断 SSE 流式接口（GET，便于 EventSource；参数通过 query 传递）
+  router.get('/diagnose/stream', optionalAuth, aiGenerateLimiter, async (req, res, next) => {
+    try {
+      const userId = req.user?.id ?? null;
+      const forceRefresh = req.query.force_refresh === 'true';
+      await ai.diagnoseStream(res, userId, { force_refresh: forceRefresh });
+    } catch (e) { next(e); }
+  });
+
   router.post('/morning-comment', optionalAuth, aiGenerateLimiter, validateBody(commentSchema), async (req, res, next) => {
     try {
       const userId = req.user?.id ?? null;

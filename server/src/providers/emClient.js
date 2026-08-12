@@ -25,9 +25,11 @@ import {
   stripJsonp,
   EM_HEADERS,
   EM_NEWS_HEADERS,
+  EM_HOST,
   BATCH_SECID_LIMIT,
   KLINE_MAX_LIMIT,
   KLT,
+  FQT,
   CLIST_FS,
 } from './emEndpoints.js';
 
@@ -192,6 +194,9 @@ export function createEmClient(options = {}) {
     klineTtlMs: Number(options.klineTtlMs ?? env.EM_KLINE_TTL_MS) || 300000,
     listTtlMs: Number(options.listTtlMs ?? env.EM_LIST_TTL_MS) || 60000,
     verbose: options.verbose ?? String(env.EM_VERBOSE || '') === 'true',
+    // K 线主源：'auto'(默认)=东财优先、失败回退腾讯；'tencent'=直走腾讯不碰东财（云端被东财封 IP 时用）；
+    // 'eastmoney'=仅东财、不做腾讯兜底（弱网调试用）
+    klineSource: (options.klineSource ?? env.EM_KLINE_SOURCE ?? 'auto').toLowerCase(),
   };
 
   const limiter = createRateLimiter({
@@ -442,6 +447,74 @@ export function createEmClient(options = {}) {
   }
 
   /**
+   * 腾讯公开 K 线兜底（push2his 被 IP 风控时使用；免 KEY，A 股/场内基金，前复权）
+   * 响应 data[symbol][keyName] = [[date, open, close, high, low, volume], ...]
+   * 与 fetchKline 返回同构（source='tencent'），上层无感知。
+   * @returns {Promise<object|null>} K 线结果；失败返回 null（由上层降级 sqlite）
+   */
+  async function fetchKlineTencent(code, limit, klt, fqt) {
+    const prefix = /^[569]/.test(code) ? 'sh' : /^[48]/.test(code) ? 'bj' : 'sz';
+    const symbol = `${prefix}${code}`;
+    const kltName = klt === KLT.WEEK ? 'week' : klt === KLT.MONTH ? 'month' : 'day';
+    const fqName = fqt === FQT.NONE ? '' : fqt === FQT.HFQ ? 'hfq' : 'qfq';
+    const keyName = kltName === 'day' ? (fqName ? `${fqName}day` : 'day') : kltName;
+    const url = `${emEndpoints.klineTencent.host}${emEndpoints.klineTencent.path}?param=${symbol},${kltName},,,${limit},${fqName}`;
+
+    let json = null;
+    try {
+      json = await limiter.run(emEndpoints.klineTencent.rateKey, async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
+        try {
+          const dispatcher = await getDispatcher(CHANNEL);
+          stats.requests += 1;
+          const init = { headers: EM_HEADERS, signal: controller.signal };
+          if (dispatcher) init.dispatcher = dispatcher;
+          const res = await fetch(url, init);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.json();
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+    } catch (e) {
+      if (cfg.verbose) console.warn(`[emClient] tencent kline ${symbol} 失败: ${e.message}`);
+      return null;
+    }
+
+    const rows = json?.data?.[symbol]?.[keyName] || json?.data?.[symbol]?.day || [];
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+
+    const bars = [];
+    let prevClose = null;
+    for (const r of rows) {
+      if (!Array.isArray(r) || r.length < 6) continue;
+      const date = String(r[0] || '').trim();
+      const close = toNum(r[2]);
+      if (!date || close === null) continue;
+      const pctChg = prevClose === null || prevClose === 0 ? null : ((close - prevClose) / prevClose) * 100;
+      bars.push({
+        date,
+        open: toNum(r[1]),
+        close,
+        high: toNum(r[3]),
+        low: toNum(r[4]),
+        volume: toNum(r[5]),
+        amount: null,
+        amplitude: null,
+        pct_chg: pctChg,
+        change: prevClose === null ? null : close - prevClose,
+        turnover_rate: null,
+        pre_close: prevClose,
+      });
+      prevClose = close;
+    }
+    if (bars.length === 0) return null;
+
+    return { code, secid: symbol, name: null, klt, fqt, bars, source: 'tencent' };
+  }
+
+  /**
    * 历史 K 线
    * @param {string} code 6 位裸码
    * @param {object} [opts] 选项
@@ -466,10 +539,20 @@ export function createEmClient(options = {}) {
     if (opts.noCache) cache.delete(key);
 
     const loaded = await cache.getOrLoad(key, cfg.klineTtlMs, async () => {
+      // 直走腾讯模式：云端被东财 IP 风控时，跳过东财重试/熔断空耗，直接取真实 K 线
+      if (cfg.klineSource === 'tencent') {
+        const tencent = await fetchKlineTencent(c, limit, klt, fqt);
+        return tencent || undefined; // 失败不落缓存，由上层降级 sqlite
+      }
       const json = await requestJson(emEndpoints.kline, { secid, klt, fqt, lmt: limit });
-      if (json === null) return undefined; // 请求级失败不落缓存
-      const data = json?.data;
-      if (!data || !Array.isArray(data.klines)) return null;
+      // push2his 不可达（IP 风控）或无 klines → 腾讯真实 K 线兜底（source='tencent'）
+      if (json === null || !json?.data || !Array.isArray(json.data.klines)) {
+        if (cfg.klineSource === 'eastmoney') return undefined; // 仅东财模式：不做腾讯兜底
+        const tencent = await fetchKlineTencent(c, limit, klt, fqt);
+        if (tencent) return tencent;
+        return undefined; // 两路都失败：不落缓存，由上层降级 sqlite
+      }
+      const data = json.data;
       const bars = [];
       let malformed = 0;
       for (const line of data.klines) {
@@ -542,7 +625,13 @@ export function createEmClient(options = {}) {
         for (const raw of page) {
           rows.push(decodeByMap(raw, endpoint.fieldMap));
         }
-        if (rows.length >= total && total > 0) break;
+        // 终止条件：
+        //   · 原 `rows.length >= total` 在按 f3 等含大量并列值的字段排序时，
+        //     页边界会被东财重复返回，导致 rows 提前累计到 total 而 break，
+        //     漏掉真正的最后一页（停牌/跌停尾巴）。
+        //   · `page.length < pageSize` 也不安全：clist 接口实际每页上限约 100，
+        //     即使请求 pz=200 也只会返回 100 条，误判为末页。
+        // 因此用「本页返回 0 条」作为唯一可靠的末页信号，并以 maxPages 兜底。
       }
       return { total: total || rows.length, rows };
     });

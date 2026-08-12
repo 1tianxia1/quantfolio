@@ -148,7 +148,5 @@ export declare const ACTIVE_DIMENSION: {
 };
 
 export declare const APP_NAME: string;
-export declare const TRADE_DATE: string;
 export declare const AI_DISCLAIMER: string;
 export declare const SCREENER_DISCLAIMER: string;
-export declare const DATA_LINEAGE_NOTICE: string;

@@ -1,18 +1,20 @@
 // ============================================================
-// 模型设置页（自定义 AI 模型）
-// 流程：选厂商 → 选/填模型 → 填 Key → 测试 → 保存
+// 设置页：模型设置（自定义 AI 模型） + 市场数据源（实时行情开关/刷新）
 // ============================================================
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box, Paper, Typography, TextField, Button, MenuItem, InputAdornment,
-  Alert, CircularProgress, Divider, Chip, Link,
+  Alert, CircularProgress, Divider, Chip, Link, Switch, FormControlLabel,
 } from '@mui/material';
 import KeyIcon from '@mui/icons-material/Key';
 import SaveIcon from '@mui/icons-material/Save';
 import CableIcon from '@mui/icons-material/Cable';
 import SettingsIcon from '@mui/icons-material/Settings';
+import ShowChartIcon from '@mui/icons-material/ShowChart';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import { useNavigate } from 'react-router-dom';
 import { aiApi, type AiProvider, type AiConfigMasked } from '../api/ai';
+import { marketApi, type MarketStatus, type RefreshState } from '../api/market';
 import { useSnackbar } from '../components/common/SnackbarProvider';
 import { useAuthStore } from '../store/authStore';
 import { useAiConfigStore } from '../store/aiConfigStore';
@@ -43,6 +45,26 @@ export default function SettingsPage() {
     [providers, provider],
   );
 
+  // ---------- 市场数据源 ----------
+  const [realtime, setRealtime] = useState(false);
+  const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
+  const [savingMarket, setSavingMarket] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshState, setRefreshState] = useState<RefreshState | null>(null);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const refreshTimer = useRef<number | null>(null);
+
+  async function loadMarketStatus() {
+    try {
+      const s = await marketApi.status();
+      setMarketStatus(s);
+      setRealtime(s.realtimeEnabled);
+      setRefreshState(s.refresh);
+    } catch (_e) {
+      /* 即便失败也不阻断 AI 设置展示 */
+    }
+  }
+
   // 初始化：拉厂商列表 + 当前配置
   useEffect(() => {
     if (!isLoggedIn()) {
@@ -65,6 +87,57 @@ export default function SettingsPage() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoggedIn()]);
+
+  // 加载市场状态 + 卸载时清理轮询
+  useEffect(() => {
+    if (isLoggedIn()) loadMarketStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn()]);
+  useEffect(() => () => {
+    if (refreshTimer.current) window.clearInterval(refreshTimer.current);
+  }, []);
+
+  async function saveMarketSettings(next: boolean) {
+    setSavingMarket(true);
+    setMarketError(null);
+    try {
+      const r = await marketApi.setMarketSettings({ realtime: next });
+      setRealtime(r.realtimeEnabled);
+      snackbar.show(next ? '已启用实时行情（东方财富）' : '已切换回本地数据', 'success');
+      loadMarketStatus();
+    } catch (e) {
+      setMarketError((e as Error).message);
+    } finally {
+      setSavingMarket(false);
+    }
+  }
+
+  function pollRefresh() {
+    if (refreshTimer.current) window.clearInterval(refreshTimer.current);
+    refreshTimer.current = window.setInterval(async () => {
+      try {
+        const st = await marketApi.refreshStatus();
+        setRefreshState(st);
+        if (st.status === 'done' || st.status === 'failed') {
+          if (refreshTimer.current) window.clearInterval(refreshTimer.current);
+          setRefreshing(false);
+          loadMarketStatus();
+        }
+      } catch (_e) { /* 继续轮询 */ }
+    }, 2000);
+  }
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    setMarketError(null);
+    try {
+      await marketApi.refresh({ limit: 120 });
+      pollRefresh();
+    } catch (e) {
+      setMarketError((e as Error).message);
+      setRefreshing(false);
+    }
+  }
 
   // 把后端配置回填到表单
   function applyConfig(cfg: AiConfigMasked, ps: AiProvider[]) {
@@ -137,9 +210,9 @@ export default function SettingsPage() {
   if (!isLoggedIn()) {
     return (
       <Box sx={{ p: 4, textAlign: 'center' }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>模型设置需要登录</Typography>
+        <Typography variant="h6" sx={{ mb: 2 }}>设置需要登录</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          自定义 AI 模型按账号保存，请先登录后配置。
+          自定义 AI 模型与实时行情配置按账号保存，请先登录后配置。
         </Typography>
         <Button variant="contained" onClick={() => navigate(`/login?redirect=${encodeURIComponent('/settings')}`)}>
           去登录
@@ -160,7 +233,10 @@ export default function SettingsPage() {
 
   return (
     <Box sx={{ maxWidth: 680, mx: 'auto', p: 3 }}>
-      <PageHeader title="模型设置" icon={<SettingsIcon />} />
+      <PageHeader title="设置" icon={<SettingsIcon />} />
+
+      {/* ===== AI 模型 ===== */}
+      <Typography variant="subtitle1" sx={{ mt: 1, mb: 1, fontWeight: 600 }}>AI 模型</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         选择你自己的 AI 厂商与模型，全站 AI 分析（组合诊断 / 早盘点评 / 尾盘解读）将使用你配置的模型生成。
         未配置时回落到服务端默认模型。Key 仅保存在本机服务端数据库，前端不展示明文。
@@ -286,6 +362,61 @@ export default function SettingsPage() {
         提示：各厂商 Key 获取地址见其官网；海外厂商（OpenAI / Anthropic / Gemini）需自备可达网络。
         本地 Ollama 一般无需 Key。更多厂商支持可在后端 <code>server/src/ai/providers.js</code> 扩展。
       </Typography>
+
+      {/* ===== 市场数据源 ===== */}
+      <Typography variant="subtitle1" sx={{ mt: 4, mb: 1, fontWeight: 600 }}>市场数据源</Typography>
+      <Paper variant="outlined" sx={{ p: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <ShowChartIcon color="primary" />
+          <Typography variant="h6">实时行情</Typography>
+        </Box>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          开启后，K 线 / 报价走东方财富实时行情；分析层（选股 / 评分 / 指标）通过「立即刷新行情」回填真实数据。
+          关闭则回落本地缓存数据。
+        </Typography>
+
+        <FormControlLabel
+          control={
+            <Switch
+              checked={realtime}
+              disabled={savingMarket}
+              onChange={(e) => saveMarketSettings(e.target.checked)}
+            />
+          }
+          label={realtime ? '实时行情已开启（东方财富）' : '使用本地缓存数据'}
+        />
+
+        <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap', mt: 1 }}>
+          <Button
+            variant="outlined"
+            startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshIcon />}
+            onClick={handleRefresh}
+            disabled={refreshing || !realtime || savingMarket}
+          >
+            {refreshing ? '刷新中…' : '立即刷新行情'}
+          </Button>
+          {marketStatus && (
+            <Typography variant="caption" color="text.secondary">
+              数据源：{marketStatus.provider} · 最近交易日：{marketStatus.tradeDate || '—'}
+            </Typography>
+          )}
+        </Box>
+
+        {refreshState && (refreshState.status === 'running' || refreshState.status === 'done' || refreshState.status === 'failed') && (
+          <Alert
+            severity={refreshState.status === 'failed' ? 'error' : refreshState.status === 'running' ? 'info' : 'success'}
+            sx={{ mt: 2 }}
+          >
+            {refreshState.status === 'running' && '正在回填真实行情，请稍候（也可在顶栏查看进度）…'}
+            {refreshState.status === 'done' && `刷新完成，最新交易日 ${refreshState.lastResult?.tradeDate || '—'}`}
+            {refreshState.status === 'failed' && `刷新失败：${refreshState.lastError || '未知错误'}`}
+          </Alert>
+        )}
+
+        {marketError && (
+          <Alert severity="error" sx={{ mt: 2 }} onClose={() => setMarketError(null)}>{marketError}</Alert>
+        )}
+      </Paper>
     </Box>
   );
 }

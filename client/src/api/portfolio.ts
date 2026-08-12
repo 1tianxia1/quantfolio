@@ -170,6 +170,11 @@ export const portfolioApi = {
       httpLong.post('/portfolio/holdings/import-image', { images, hint }),
     );
   },
+  batchUpsertHoldings(data: Partial<Holding>[]) {
+    return unwrap<{ upserted: number; created: number; updated: number; errors: { row: number; msg: string }[] }>(
+      http.post('/portfolio/holdings/batch-upsert', { rows: data }),
+    );
+  },
   summary(dimension?: string) {
     return unwrap<PortfolioSummary>(http.get('/portfolio/summary', { params: dimension ? { dimension } : {} }));
   },

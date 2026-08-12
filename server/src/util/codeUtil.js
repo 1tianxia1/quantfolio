@@ -144,12 +144,57 @@ export function isFundCode(input) {
 }
 
 /**
- * 由代码推断证券类型（仅用于本地缺省兜底，东财返回名称时以东财为准）
+ * 是否为沪深京 **A 股** 代码
+ *
+ * 沪市：60xxxx（主板）、688xxx / 689xxx（科创板）
+ * 深市：000/001（主板）、002/003（原中小板）、300/301（创业板）
+ * 北交所：43xxxx / 83xxxx / 87xxxx / 920xxx
+ *
  * @param {string} input 6 位裸码
- * @returns {'stock'|'fund'} 证券类型
+ * @returns {boolean}
+ */
+export function isAShareStockCode(input) {
+  const code = tryNormalizeCode(input);
+  if (!code) return false;
+  return /^(60|688|689|000|001|002|003|300|301|43|83|87|920)/.test(code);
+}
+
+/**
+ * 是否为债券代码（国债 / 地方债 / 企业债 / 可转债 / 回购等）
+ *
+ * ⚠️ 存在意义：`guessType` 早期实现是「不是基金就是股票」，导致东财返回的
+ *    3 万余只债券代码被写成 type='stock'，把 screener 的股票池从 5.5K 撑到
+ *    36.7K，漏斗第一步即产生 3 万条「数据缺失」淘汰记录。
+ *
+ * 沪市债券：01xxxx~02xxxx（国债/地方债）、10xxxx~13xxxx、11xxxx(可转债)、
+ *          15xxxx~19xxxx（企业债/私募债，与深市基金码空间不重叠因交易所不同）
+ * 深市债券：10xxxx~12xxxx（可转债 128/127/123 等）、2xxxxx（深市各类债券）
+ *
+ * @param {string} input 6 位裸码
+ * @returns {boolean}
+ */
+export function isBondCode(input) {
+  const code = tryNormalizeCode(input);
+  if (!code) return false;
+  if (isAShareStockCode(code)) return false; // A 股优先，避免误伤
+  if (isFundCode(code)) return false;        // 基金优先
+  // 1xxxxx / 2xxxxx 且非 A 股非基金 → 债券空间
+  return /^[12]/.test(code);
+}
+
+/**
+ * 由代码推断证券类型（仅用于本地缺省兜底，东财返回名称时以东财为准）
+ *
+ * 返回 null 表示「既不是 A 股也不是场内基金」（多为债券/回购），
+ * 调用方应据此**拒绝入库**，而不是兜底成 'stock' 污染股票池。
+ *
+ * @param {string} input 6 位裸码
+ * @returns {'stock'|'fund'|null} 证券类型；无法归类时为 null
  */
 export function guessType(input) {
-  return isFundCode(input) ? 'fund' : 'stock';
+  if (isFundCode(input)) return 'fund';
+  if (isAShareStockCode(input)) return 'stock';
+  return null;
 }
 
 /**

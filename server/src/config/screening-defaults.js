@@ -28,9 +28,9 @@ export const CLOSING_PIPELINE_STEPS = [
   },
   {
     id: 'vol_streak',
-    label: '连续 3~5 日温和放量',
+    label: '连续 2~8 日温和放量',
     enabled: true,
-    params: { minStreak: 3, maxStreak: 5 },
+    params: { minStreak: 2, maxStreak: 8 },
   },
   {
     id: 'ma_bullish',

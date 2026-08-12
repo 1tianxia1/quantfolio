@@ -22,6 +22,11 @@ export interface ImageImportCandidate {
   asset_class: Holding['asset_class'];
   quantity: number;
   cost_price: number;
+  current_price?: number;
+  profit?: number;
+  profit_rate?: number;
+  day_profit?: number;
+  day_profit_rate?: number;
 }
 
 interface ImageImportDialogProps {
@@ -195,6 +200,11 @@ export default function ImageImportDialog({ open, onClose, onRecognize, onImport
         asset_class: (c.asset_class as Holding['asset_class']) || 'stock',
         quantity: Number.isFinite(Number(c.quantity)) ? Number(c.quantity) : 0,
         cost_price: Number.isFinite(Number(c.cost_price)) ? Number(c.cost_price) : 0,
+        current_price: Number.isFinite(Number(c.current_price)) ? Number(c.current_price) : undefined,
+        profit: Number.isFinite(Number(c.profit)) ? Number(c.profit) : undefined,
+        profit_rate: Number.isFinite(Number(c.profit_rate)) ? Number(c.profit_rate) : undefined,
+        day_profit: Number.isFinite(Number(c.day_profit)) ? Number(c.day_profit) : undefined,
+        day_profit_rate: Number.isFinite(Number(c.day_profit_rate)) ? Number(c.day_profit_rate) : undefined,
       }));
       setCandidates(mapped);
       setWarnings(rawWarnings || []);
@@ -262,7 +272,7 @@ export default function ImageImportDialog({ open, onClose, onRecognize, onImport
             <ToggleButton value="fund">基金截图</ToggleButton>
           </ToggleButtonGroup>
           <Typography variant="caption" color="text.secondary">
-            提示：股票截图需识别「持仓数量」和「成本价」；基金截图仅需「金额」，成本价固定为 1。
+            提示：股票截图需识别「持仓数量」和「成本价」；基金截图给出「金额」，识别后会按最新净值自动换算成「份额」。
           </Typography>
         </Box>
 
@@ -389,7 +399,7 @@ export default function ImageImportDialog({ open, onClose, onRecognize, onImport
                   </TextField>
                   <TextField
                     size="small"
-                    label={c.asset_class === 'fund' ? '金额（元）' : '数量'}
+                    label={c.asset_class === 'fund' ? '份额' : '数量'}
                     type="number"
                     value={c.quantity}
                     onChange={(e) => updateCandidate(c.id, { quantity: Number(e.target.value) })}
@@ -397,7 +407,7 @@ export default function ImageImportDialog({ open, onClose, onRecognize, onImport
                   />
                   <TextField
                     size="small"
-                    label={c.asset_class === 'fund' ? '成本价（默认1）' : '成本价'}
+                    label={c.asset_class === 'fund' ? '成本净值' : '成本价'}
                     type="number"
                     value={c.cost_price}
                     disabled={c.asset_class === 'fund'}
@@ -406,7 +416,8 @@ export default function ImageImportDialog({ open, onClose, onRecognize, onImport
                   />
                   {/* 实时盈亏预览：市值 / 成本 / 盈亏率（编辑时即可见，无需先导入） */}
                   {(() => {
-                    const marketValue = c.asset_class === 'fund' ? c.quantity : c.quantity * c.cost_price;
+                    const fundPrice = c.asset_class === 'fund' && Number.isFinite(Number(c.current_price)) ? Number(c.current_price) : 1;
+                    const marketValue = c.asset_class === 'fund' ? c.quantity * fundPrice : c.quantity * c.cost_price;
                     const costAmount = c.quantity * c.cost_price;
                     const profitRate = costAmount > 0 ? ((marketValue - costAmount) / costAmount) * 100 : 0;
                     return (

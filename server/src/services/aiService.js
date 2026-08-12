@@ -77,7 +77,8 @@ export async function callLLM(prompt, opts = {}) {
  * @param {object} [opts.aiConfig] 用户自定义配置（覆盖 .env 默认）
  * @param {number} [opts.temperature]
  * @param {number} [opts.maxTokens]
- * @param {number} [opts.timeoutMs] 覆盖默认超时
+ * @param {number} [opts.timeoutMs] 覆盖默认单次超时
+ * @param {number} [opts.maxRetries] 覆盖默认重试次数（不含首次请求）
  * @returns {Promise<string>} 模型回复文本
  */
 export async function callVisionLLM(prompt, imageBase64List, opts = {}) {
@@ -92,27 +93,84 @@ export async function callVisionLLM(prompt, imageBase64List, opts = {}) {
     throw new Error('图片参数不能为空');
   }
 
-  const controller = new AbortController();
+  // 单次请求的超时窗口：重试只是多给几次机会，不放大单次窗口
   const timeoutMs = opts.timeoutMs ?? env.AI_VISION_TIMEOUT_MS;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 夹紧到 >= 0 的整数：配成负数/NaN 时不能让循环一次都不执行（那会变成「不发请求就报超时」）
+  const rawRetries = Number(opts.maxRetries ?? env.AI_VISION_MAX_RETRIES ?? 2);
+  const maxRetries = Number.isFinite(rawRetries) ? Math.max(0, Math.floor(rawRetries)) : 2;
 
-  try {
-    const content = cfg.apiStyle === 'anthropic'
-      ? await callAnthropicVision(cfg, prompt, imageBase64List, opts, controller.signal)
-      : await callOpenAIVision(cfg, prompt, imageBase64List, opts, controller.signal);
-    return content;
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      throw new Error('AI 图片识别请求超时');
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const content = cfg.apiStyle === 'anthropic'
+        ? await callAnthropicVision(cfg, prompt, imageBase64List, opts, controller.signal)
+        : await callOpenAIVision(cfg, prompt, imageBase64List, opts, controller.signal);
+      clearTimeout(timer);
+      return content;
+    } catch (e) {
+      clearTimeout(timer);
+      // 可重试：超时 / 网络层失败 / 上游 5xx（偶发超时的三大元凶）
+      const retryable =
+        e.name === 'AbortError' ||
+        e instanceof TypeError ||
+        (e && typeof e.message === 'string' && /返回 5\d\d/.test(e.message));
+      if (retryable && attempt < maxRetries) {
+        lastErr = e;
+        const backoff = Math.min(1000 * 2 ** attempt, 5000);
+        await new Promise((r) => setTimeout(r, backoff));
+        continue;
+      }
+      if (e.name === 'AbortError') {
+        throw new Error(maxRetries > 0 ? `AI 图片识别请求超时（已重试 ${maxRetries} 次）` : 'AI 图片识别请求超时');
+      }
+      throw e;
     }
-    throw e;
-  } finally {
-    clearTimeout(timer);
+  }
+  throw lastErr instanceof Error
+    ? new Error(`AI 图片识别请求超时（已重试 ${maxRetries} 次）`)
+    : (lastErr || new Error('AI 图片识别请求超时'));
+}
+
+/** 解析 OpenAI 兼容协议的 SSE 流，按 delta 产出 */
+async function* streamOpenAI(body) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const json = JSON.parse(data);
+        const delta = json?.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string') yield delta;
+      } catch (_) {
+        // 忽略无法解析的 SSE 行
+      }
+    }
+  }
+  // 刷新缓冲区剩余内容
+  if (buffer.trim().startsWith('data:')) {
+    const data = buffer.trim().slice(5).trim();
+    if (data && data !== '[DONE]') {
+      try {
+        const json = JSON.parse(data);
+        const delta = json?.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string') yield delta;
+      } catch (_) { /* ignore */ }
+    }
   }
 }
 
-/** OpenAI 兼容协议 */
+/** OpenAI 兼容协议（默认流式输出，减少首字节等待时间） */
 async function callOpenAI(cfg, prompt, opts, signal) {
+  const useStream = opts.stream !== false && env.AI_STREAM !== 'false';
   const res = await fetch(cfg.baseUrl, {
     method: 'POST',
     headers: {
@@ -127,7 +185,7 @@ async function callOpenAI(cfg, prompt, opts, signal) {
       ],
       temperature: opts.temperature ?? 0.7,
       max_tokens: opts.maxTokens ?? 1024,
-      stream: false,
+      stream: useStream,
     }),
     signal,
   });
@@ -137,13 +195,23 @@ async function callOpenAI(cfg, prompt, opts, signal) {
     throw new Error(`AI API 返回 ${res.status}: ${text.slice(0, 200)}`);
   }
 
+  if (useStream) {
+    let content = '';
+    for await (const delta of streamOpenAI(res.body)) {
+      content += delta;
+      if (opts.onDelta) opts.onDelta(delta, content);
+    }
+    if (!content) throw new Error('AI API 响应缺少 content');
+    return String(content);
+  }
+
   const data = await res.json();
   const content = data?.choices?.[0]?.message?.content;
   if (!content) throw new Error('AI API 响应缺少 content');
   return String(content);
 }
 
-/** OpenAI 兼容协议 — 视觉多图 */
+/** OpenAI 兼容协议 — 视觉多图（默认流式） */
 async function callOpenAIVision(cfg, prompt, imageBase64List, opts, signal) {
   const content = [
     { type: 'text', text: prompt },
@@ -152,6 +220,7 @@ async function callOpenAIVision(cfg, prompt, imageBase64List, opts, signal) {
       image_url: { url: b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}` },
     })),
   ];
+  const useStream = opts.stream !== false && env.AI_STREAM !== 'false';
   const res = await fetch(cfg.baseUrl, {
     method: 'POST',
     headers: {
@@ -166,7 +235,7 @@ async function callOpenAIVision(cfg, prompt, imageBase64List, opts, signal) {
       ],
       temperature: opts.temperature ?? 0.1,
       max_tokens: opts.maxTokens ?? 2048,
-      stream: false,
+      stream: useStream,
     }),
     signal,
   });
@@ -176,8 +245,17 @@ async function callOpenAIVision(cfg, prompt, imageBase64List, opts, signal) {
     throw new Error(`AI API 返回 ${res.status}: ${text.slice(0, 200)}`);
   }
 
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content;
+  if (useStream) {
+    let text = '';
+    for await (const delta of streamOpenAI(res.body)) {
+      text += delta;
+      if (opts.onDelta) opts.onDelta(delta, text);
+    }
+    if (!text) throw new Error('AI API 响应缺少 content');
+    return String(text);
+  }
+
+  const text = (await res.json())?.choices?.[0]?.message?.content;
   if (!text) throw new Error('AI API 响应缺少 content');
   return String(text);
 }
@@ -259,12 +337,12 @@ export async function testLLM(aiConfig) {
   if (!cfg.model) throw new Error('请先选择模型');
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), env.AI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), 20000);
 
   try {
     const content = cfg.apiStyle === 'anthropic'
       ? await callAnthropic(cfg, '请只回复「OK」两个字，不要多余内容。', { maxTokens: 16 })
-      : await callOpenAI(cfg, '请只回复「OK」两个字，不要多余内容。', { maxTokens: 16 });
+      : await callOpenAI(cfg, '请只回复「OK」两个字，不要多余内容。', { maxTokens: 16, stream: false });
     if (!content || !String(content).trim()) throw new Error('模型返回为空');
     return { ok: true, model: cfg.model };
   } catch (e) {

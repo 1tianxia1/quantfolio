@@ -16,10 +16,14 @@
 
 /** 东财主机（行情实时 / 行情历史 / 资讯检索） */
 export const EM_HOST = Object.freeze({
-  /** 实时快照、列表、板块 */
+  /** 实时快照、列表、板块（实时，但部分出口 IP 会被东财风控 502） */
   PUSH2: 'https://push2.eastmoney.com',
-  /** 历史 K 线、历史资金流 */
+  /** 延迟行情镜像（约 15 分钟延迟，数据结构与 push2 完全一致；本网络实测可用） */
+  PUSH2_DELAY: 'http://push2delay.eastmoney.com',
+  /** 历史 K 线、历史资金流（部分出口 IP 会被风控，emClient 内置腾讯 K 线兜底） */
   PUSH2HIS: 'https://push2his.eastmoney.com',
+  /** 腾讯公开 K 线接口（免 KEY，A 股/场内基金，前复权；push2his 被风控时的真实数据兜底） */
+  TENCENT_KLINE: 'https://web.ifzq.gtimg.cn',
   /** 全站资讯搜索（JSONP，需剥壳） */
   SEARCH: 'https://search-api-web.eastmoney.com',
   /** 个股公告列表 */
@@ -212,10 +216,10 @@ export const CLIST_FS = Object.freeze({
 //   rateKey   : 限频器的端点子桶键
 // ------------------------------------------------------------
 export const emEndpoints = Object.freeze({
-  /** 单标的实时快照 */
+  /** 单标的实时快照（push2delay：约 15 分钟延迟，本网络实测可用） */
   quote: Object.freeze({
     name: 'quote',
-    host: EM_HOST.PUSH2,
+    host: EM_HOST.PUSH2_DELAY,
     path: '/api/qt/stock/get',
     rateKey: 'stock.get',
     fieldMap: QUOTE_FIELD_MAP,
@@ -230,7 +234,7 @@ export const emEndpoints = Object.freeze({
   /** 批量实时快照（secids 逗号分隔，单次 ≤ BATCH_SECID_LIMIT） */
   quotes: Object.freeze({
     name: 'quotes',
-    host: EM_HOST.PUSH2,
+    host: EM_HOST.PUSH2_DELAY,
     path: '/api/qt/ulist.np/get',
     rateKey: 'ulist.np',
     fieldMap: LIST_FIELD_MAP,
@@ -242,7 +246,7 @@ export const emEndpoints = Object.freeze({
     }),
   }),
 
-  /** 历史日/周/月 K 线 */
+  /** 历史日/周/月 K 线（push2his 被风控时 emClient 自动走腾讯 klineTencent 兜底） */
   kline: Object.freeze({
     name: 'kline',
     host: EM_HOST.PUSH2HIS,
@@ -260,10 +264,18 @@ export const emEndpoints = Object.freeze({
     }),
   }),
 
+  /** 腾讯 K 线兜底（push2his 不可达时使用；param 风格与东财不同，走 emClient 专用解析） */
+  klineTencent: Object.freeze({
+    name: 'klineTencent',
+    host: EM_HOST.TENCENT_KLINE,
+    path: '/appstock/app/fqkline/get',
+    rateKey: 'kline.get',
+  }),
+
   /** 全市场/板块成分列表（分页） */
   clist: Object.freeze({
     name: 'clist',
-    host: EM_HOST.PUSH2,
+    host: EM_HOST.PUSH2_DELAY,
     path: '/api/qt/clist/get',
     rateKey: 'clist.get',
     fieldMap: LIST_FIELD_MAP,
@@ -284,7 +296,7 @@ export const emEndpoints = Object.freeze({
   /** 板块列表（行业 / 概念 / 地域），与 clist 同路径但字段体系不同 */
   sectorList: Object.freeze({
     name: 'sectorList',
-    host: EM_HOST.PUSH2,
+    host: EM_HOST.PUSH2_DELAY,
     path: '/api/qt/clist/get',
     rateKey: 'clist.get',
     fieldMap: SECTOR_FIELD_MAP,

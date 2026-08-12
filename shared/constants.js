@@ -206,7 +206,5 @@ export const ACTIVE_DIMENSION = {
 
 /** 应用信息 */
 export const APP_NAME = 'QuantFolio';
-export const TRADE_DATE = '2026-08-07';
 export const AI_DISCLAIMER = '本内容由 AI 生成，仅供研究参考，不构成投资建议';
 export const SCREENER_DISCLAIMER = '本平台内容为量化模型输出，不构成投资建议，据此操作风险自担';
-export const DATA_LINEAGE_NOTICE = '行情截至 2026-08-07 收盘，历史 K 线为模拟数据，最新价为真实行情';

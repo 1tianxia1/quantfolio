@@ -2,6 +2,7 @@
 // AI API
 // ============================================================
 import http, { unwrap } from './http';
+import { useAuthStore } from '../store/authStore';
 
 export interface AiReport {
   id: number;
@@ -25,6 +26,72 @@ export const aiApi = {
   diagnose(data: { force_refresh?: boolean }) {
     return unwrap<AiReport>(http.post('/ai/diagnose', data));
   },
+
+  /**
+   * 组合诊断 SSE 流式接口。
+   * 使用原生 fetch + ReadableStream 读取 text/event-stream，支持 Authorization token。
+   */
+  diagnoseStream(params: {
+    force_refresh?: boolean;
+    onChunk: (chunk: { delta: string; content: string; cached?: boolean }) => void;
+    onDone?: (payload: { content: string; generatedAt?: string; cached?: boolean; aiMeta?: AiReport['ai_meta'] }) => void;
+    onError?: (message: string) => void;
+  }) {
+    return new Promise<void>((resolve, reject) => {
+      const qs = new URLSearchParams();
+      if (params.force_refresh) qs.set('force_refresh', 'true');
+      const token = useAuthStore.getState().token;
+
+      fetch(`/api/ai/diagnose/stream?${qs.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      }).then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => '流式请求失败');
+          reject(new Error(`HTTP ${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body?.getReader();
+        if (!reader) {
+          reject(new Error('响应流不可用'));
+          return;
+        }
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let doneReceived = false;
+        while (!doneReceived) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          let currentEvent = '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('event:')) {
+              currentEvent = trimmed.slice(6).trim();
+            } else if (trimmed.startsWith('data:')) {
+              const data = trimmed.slice(5).trim();
+              try {
+                const payload = JSON.parse(data);
+                if (currentEvent === 'chunk') {
+                  params.onChunk(payload);
+                } else if (currentEvent === 'done') {
+                  doneReceived = true;
+                  params.onDone?.(payload);
+                } else if (currentEvent === 'error') {
+                  params.onError?.(payload.message || 'AI 流式请求失败');
+                }
+              } catch (_) {
+                // 忽略无法解析的 SSE 数据行
+              }
+            }
+          }
+        }
+        resolve();
+      }).catch((err) => reject(err));
+    });
+  },
+
   morningComment(data: { items?: unknown[]; force_refresh?: boolean }) {
     return unwrap<AiReport>(http.post('/ai/morning-comment', data));
   },

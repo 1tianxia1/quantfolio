@@ -153,6 +153,17 @@ export function createSecurityModel(db) {
       ).reverse();
     },
 
+    // ---------- fund_nav（场外基金净值，按代码取各自最新披露日） ----------
+    getFundNav(codes) {
+      if (!codes || codes.length === 0) return [];
+      return selectByCodes(db, codes, (ph) =>
+        `SELECT fn.code, fn.nav_date, fn.nav, fn.pre_nav, fn.nav_chg_pct, fn.is_estimate, fn.data_origin
+         FROM fund_nav fn
+         WHERE fn.code IN (${ph})
+           AND fn.nav_date = (SELECT MAX(nav_date) FROM fund_nav WHERE code = fn.code)`,
+      ).sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+    },
+
     // ---------- tech_indicators ----------
     getLatestIndicators(codes) {
       if (!codes || codes.length === 0) return [];

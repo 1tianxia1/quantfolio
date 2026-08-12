@@ -111,7 +111,11 @@ export function createQuoteSyncService(db, options = {}) {
     try {
       const exist = db.get('SELECT code FROM securities WHERE code = ?', [c]);
       if (exist) return true;
+      // guessType 返回 null = 既非 A 股也非场内基金（多为债券/回购）。
+      // 早期实现在这里兜底成 'stock'，把 3 万余只债券灌进了股票池，
+      // 导致 screener 的 universe 从 5.5K 膨胀到 36.7K。宁可不入库，不可错分类。
       const t = type || guessType(c);
+      if (!t) return false;
       const { board, priceLimit, isST } = inferBoard(c, t, name);
       db.run(secSql, rowToValues(SEC_COLS, {
         code: c,
@@ -327,7 +331,10 @@ export function createQuoteSyncService(db, options = {}) {
       let codes = rows.map((r) => r.code);
       if (Number(opts.max) > 0) codes = codes.slice(0, Number(opts.max));
       log(`准备同步 ${codes.length} 只标的的日 K 线（每只 ${opts.limit || 250} 根）`);
-      return this.syncKlines(codes, { limit: opts.limit, onProgress: opts.onProgress });
+      const summary = await this.syncKlines(codes, { limit: opts.limit, onProgress: opts.onProgress });
+      // 附上本次实际同步的 code 集合，供下游「仅对同步标的做派生重算」做范围裁剪（内存友好）
+      summary.codes = codes;
+      return summary;
     },
   };
 }

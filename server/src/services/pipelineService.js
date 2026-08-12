@@ -242,7 +242,9 @@ function closingStepCheck(id, snap, p) {
     }
     case 'vol_streak': {
       const v = snap.volume_streak;
-      if (v == null) return { ok: false, reason: '放量数据缺失' };
+      // 数据缺失时放行（不淘汰），避免「字段空 → 全市场 0 命中」的静默失败；
+      // 字段存在时仍按阈值严格过滤。
+      if (v == null) return { ok: true, reason: '' };
       if (v < p.minStreak) return { ok: false, reason: `放量不足${p.minStreak}日` };
       if (v > p.maxStreak) return { ok: false, reason: `放量超${p.maxStreak}日` };
       return { ok: true, reason: '' };
@@ -254,7 +256,8 @@ function closingStepCheck(id, snap, p) {
       if (!bullish) return { ok: false, reason: '非多头排列' };
       // ② 上方空间 ≥ minSpace%
       const space = snap.high_60d_distance_pct;
-      if (space == null) return { ok: false, reason: '上方空间数据缺失' };
+      // 上方空间数据缺失时放行（不淘汰），避免静默 0 命中
+      if (space == null) return { ok: true, reason: '' };
       if (space < p.minSpace) return { ok: false, reason: `上方空间不足${p.minSpace}%` };
       return { ok: true, reason: '' };
     }
@@ -286,7 +289,8 @@ function morningStepCheck(id, snap, p, ctx) {
     }
     case 'mv_lt10': {
       const v = snap.circ_mv;
-      if (v == null) return { ok: false, reason: '市值数据缺失' };
+      // 市值数据缺失时放行（不淘汰），避免静默 0 命中
+      if (v == null) return { ok: true, reason: '' };
       const threshold = ctx.looseMode ? (p.looseMax ?? MORNING_LOOSE_MV) : p.max;
       if (v >= threshold) return { ok: false, reason: `市值超${threshold}亿（非小盘）` };
       return { ok: true, reason: '' };
@@ -309,7 +313,9 @@ function morningStepCheck(id, snap, p, ctx) {
     }
     case 'first_trade_vol': {
       const v = snap.first_trade_vol_ratio;
-      if (v == null) return { ok: false, reason: '首笔量比数据缺失' };
+      // 首笔量比字段当前数据源普遍缺失 → 缺失时放行（不淘汰），字段存在时仍按阈值过滤。
+      // 这是早盘七步法此前「全市场 0 命中」的首要根因。
+      if (v == null) return { ok: true, reason: '' };
       if (v < p.min) return { ok: false, reason: `首笔量比不足${p.min}` };
       return { ok: true, reason: '' };
     }

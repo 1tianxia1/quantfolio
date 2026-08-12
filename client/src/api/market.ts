@@ -1,5 +1,6 @@
 // ============================================================
 // 市场 API：overview/search/kline/sectors/meta/watchlist
+// + 实时行情状态 / 后台刷新 / 数据源设置
 // ============================================================
 import http, { unwrap } from './http';
 
@@ -64,6 +65,7 @@ export interface MarketMeta {
   stock_count: number;
   fund_count: number;
   lineage: Record<string, string>;
+  compliance: string | null;
 }
 
 export interface WatchItem {
@@ -72,7 +74,42 @@ export interface WatchItem {
   name: string | null;
   type: string | null;
   sector: string | null;
+  group_id: number | null;
+  note: string | null;
+  category?: 'a_share' | 'fund';
+  latest_close: number | null;
+  pre_close: number | null;
+  pct_chg: number | null;
+  volume: number | null;
+  amount: number | null;
+  quote_date: string | null;
   created_at: string;
+}
+
+export interface WatchGroup {
+  id: number;
+  user_id: number;
+  name: string;
+  category: 'all' | 'a_share' | 'fund';
+  created_at: string;
+}
+
+/** 后台刷新任务状态 */
+export interface RefreshState {
+  status: 'idle' | 'running' | 'done' | 'failed';
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastError: string | null;
+  lastResult: { tradeDate: string | null; stats: Record<string, unknown>; finishedAt: string } | null;
+  running: boolean;
+}
+
+/** 实时行情总状态（供顶栏 / 设置页展示） */
+export interface MarketStatus {
+  realtimeEnabled: boolean;
+  provider: string;
+  tradeDate: string | null;
+  refresh: RefreshState;
 }
 
 export const marketApi = {
@@ -91,13 +128,52 @@ export const marketApi = {
   meta() {
     return unwrap<MarketMeta>(http.get('/market/meta'));
   },
-  watchlist() {
-    return unwrap<WatchItem[]>(http.get('/market/watchlist'));
+  watchlist(category?: 'a_share' | 'fund', groupId?: number | null) {
+    const params: Record<string, string> = {};
+    if (category) params.category = category;
+    if (groupId != null) params.groupId = String(groupId);
+    return unwrap<WatchItem[]>(http.get('/market/watchlist', { params }));
   },
-  addWatchlist(code: string) {
-    return unwrap<null>(http.post('/market/watchlist', { code }));
+  addWatchlist(code: string, opts?: { category?: 'a_share' | 'fund'; groupId?: number | null; note?: string }) {
+    return unwrap<null>(http.post('/market/watchlist', { code, ...opts }));
   },
   removeWatchlist(id: number) {
     return unwrap<null>(http.delete(`/market/watchlist/${id}`));
+  },
+  // 分组
+  watchlistGroups() {
+    return unwrap<WatchGroup[]>(http.get('/market/watchlist-groups'));
+  },
+  createWatchlistGroup(name: string, category: 'all' | 'a_share' | 'fund' = 'all') {
+    return unwrap<WatchGroup>(http.post('/market/watchlist-groups', { name, category }));
+  },
+  deleteWatchlistGroup(id: number) {
+    return unwrap<null>(http.delete(`/market/watchlist-groups/${id}`));
+  },
+  renameWatchlistGroup(id: number, name: string) {
+    return unwrap<WatchGroup>(http.patch(`/market/watchlist-groups/${id}`, { name }));
+  },
+  moveWatchlistItem(id: number, groupId: number | null) {
+    return unwrap<null>(http.patch(`/market/watchlist/${id}/group`, { groupId }));
+  },
+  updateWatchlistNote(id: number, note: string) {
+    return unwrap<null>(http.patch(`/market/watchlist/${id}/note`, { note }));
+  },
+
+  /** 实时行情状态（公开） */
+  status() {
+    return unwrap<MarketStatus>(http.get('/market/status'));
+  },
+  /** 触发后台刷新真实行情（需登录） */
+  refresh(opts?: { limit?: number; max?: number }) {
+    return unwrap<{ started: boolean; alreadyRunning?: boolean }>(http.post('/market/refresh', opts || {}));
+  },
+  /** 刷新任务进度 */
+  refreshStatus() {
+    return unwrap<RefreshState>(http.get('/market/refresh/status'));
+  },
+  /** 设置数据源（实时 / 本地，需登录） */
+  setMarketSettings(body: { realtime: boolean }) {
+    return unwrap<{ realtimeEnabled: boolean; provider: string }>(http.post('/market/settings', body));
   },
 };

@@ -1,7 +1,7 @@
 // ============================================================
 // 模块一：投资组合仪表盘
 // ============================================================
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Grid, Typography, Button, Alert, ToggleButtonGroup, ToggleButton } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import UploadIcon from '@mui/icons-material/Upload';
@@ -13,6 +13,7 @@ import BalanceIcon from '@mui/icons-material/Balance';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import SummaryCards from '../components/portfolio/SummaryCards';
 import HoldingsTable from '../components/portfolio/HoldingsTable';
+import HoldingsFilter, { DEFAULT_FILTERS, matchesFilters, type HoldingsFilters } from '../components/portfolio/HoldingsFilter';
 import AllocationPanel from '../components/portfolio/AllocationPanel';
 import RebalancePanel from '../components/portfolio/RebalancePanel';
 import HoldingDialog from '../components/portfolio/HoldingDialog';
@@ -29,6 +30,7 @@ import { portfolioApi, type Holding, type PortfolioSummary, type RebalanceResult
 import { aiApi } from '../api/ai';
 import { useAuthStore } from '../store/authStore';
 import { useAiConfigStore } from '../store/aiConfigStore';
+import { setLastRefresh } from '../store/realtimeStore';
 import { useNavigate } from 'react-router-dom';
 
 export default function PortfolioDashboard() {
@@ -44,6 +46,8 @@ export default function PortfolioDashboard() {
   const [rebalanceLoading, setRebalanceLoading] = useState(false);
   const [aiContent, setAiContent] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiStreaming, setAiStreaming] = useState(false);
+  const [aiElapsedSeconds, setAiElapsedSeconds] = useState(0);
   const [aiCached, setAiCached] = useState(false);
   const [aiGeneratedAt, setAiGeneratedAt] = useState<string | undefined>();
 
@@ -52,19 +56,22 @@ export default function PortfolioDashboard() {
   const [imgOpen, setImgOpen] = useState(false);
   const [targetOpen, setTargetOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Holding | null>(null);
+  const [filters, setFilters] = useState<HoldingsFilters>(DEFAULT_FILTERS);
 
-  const loadSummary = useCallback(async (dim?: string) => {
-    setLoading(true);
+  const loadSummary = useCallback(async (dim?: string, silent?: boolean) => {
+    if (!silent) setLoading(true);
     try {
       const s = await portfolioApi.summary(dim || dimension);
       setSummary(s);
       setDimension(s.active_dimension || dim || 'asset_class');
       const settings = await portfolioApi.settings().catch(() => null);
       if (settings) setThreshold(settings.rebalance_threshold);
+      // 静默刷新成功 → 记录时间，供顶栏倒计时感知"实时"
+      setLastRefresh();
     } catch (e) {
       snackbar.show((e as Error).message, 'error');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [dimension, snackbar]);
 
@@ -82,22 +89,64 @@ export default function PortfolioDashboard() {
 
   const loadAi = useCallback(async (force = false) => {
     setAiLoading(true);
+    setAiStreaming(true);
+    setAiElapsedSeconds(0);
+    setAiContent('');
+    const timer = setInterval(() => {
+      setAiElapsedSeconds((s) => Math.min(s + 1, 180));
+    }, 1000);
+
     try {
-      const r = await aiApi.diagnose({ force_refresh: force });
-      setAiContent(r.content);
-      setAiCached(r.cached);
-      setAiGeneratedAt(r.generated_at);
-      useAiConfigStore.getState().setFromMeta(r.ai_meta);
+      await aiApi.diagnoseStream({
+        force_refresh: force,
+        onChunk: (chunk) => {
+          setAiContent((prev) => (prev || '') + chunk.delta);
+          if (chunk.cached) setAiCached(true);
+        },
+        onDone: (payload) => {
+          setAiContent(payload.content);
+          setAiCached(!!payload.cached);
+          setAiGeneratedAt(payload.generatedAt);
+          if (payload.aiMeta) useAiConfigStore.getState().setFromMeta(payload.aiMeta);
+        },
+        onError: (message) => {
+          snackbar.show(message, 'warning');
+        },
+      });
     } catch (e) {
       snackbar.show((e as Error).message, 'error');
     } finally {
+      clearInterval(timer);
       setAiLoading(false);
+      setAiStreaming(false);
     }
   }, [snackbar]);
 
   useEffect(() => {
     loadSummary();
   }, []);
+
+  // 盘中轮询：每 15 秒静默刷新盈亏（不显示 loading spinner，避免闪烁）
+  const dimensionRef = useRef(dimension);
+  dimensionRef.current = dimension;
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadSummary(dimensionRef.current, true);
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [loadSummary]);
+
+  // 页面从后台切回前台时立即刷新一次（用户切回来就能看到最新盈亏）
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        loadSummary(dimensionRef.current, true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [loadSummary]);
 
   // 维度切换联动
   const changeDimension = (dim: string) => {
@@ -159,28 +208,29 @@ export default function PortfolioDashboard() {
     return portfolioApi.importImage(images, hint);
   };
 
-  const handleImportImage = async (rows: { code: string | null; name: string; asset_class: string; quantity: number; cost_price: number }[]) => {
+  const handleImportImage = async (rows: { code: string | null; name: string; asset_class: string; quantity: number; cost_price: number; current_price?: number; profit?: number; profit_rate?: number; day_profit?: number; day_profit_rate?: number }[]) => {
     if (!requireLogin()) return { imported: 0, errors: [] };
-    let imported = 0;
-    const errors: { row: number; msg: string }[] = [];
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      try {
-        await portfolioApi.addHolding({
-          code: r.code ?? null,
-          name: r.name,
-          asset_class: r.asset_class as Holding['asset_class'],
-          quantity: r.quantity,
-          cost_price: r.cost_price,
-        });
-        imported += 1;
-      } catch (e) {
-        errors.push({ row: i + 1, msg: (e as Error).message || '导入失败' });
-      }
+    try {
+      const r = await portfolioApi.batchUpsertHoldings(
+        rows.map((row) => ({
+          code: row.code ?? null,
+          name: row.name,
+          asset_class: row.asset_class as Holding['asset_class'],
+          quantity: row.quantity,
+          cost_price: row.cost_price,
+          current_price: row.current_price,
+          profit: row.profit,
+          profit_rate: row.profit_rate,
+          day_profit: row.day_profit,
+          day_profit_rate: row.day_profit_rate,
+        })),
+      );
+      loadSummary();
+      loadRebalance();
+      return { imported: r.upserted, errors: r.errors };
+    } catch (e) {
+      return { imported: 0, errors: [{ row: 0, msg: (e as Error).message || '导入失败' }] };
     }
-    loadSummary();
-    loadRebalance();
-    return { imported, errors };
   };
 
   const handleSaveTargets = async (dim: string, items: { target_key: string; target_pct: number }[]) => {
@@ -194,6 +244,11 @@ export default function PortfolioDashboard() {
     // 组合导出暂不提供（CSV 导出在选股模块）
     snackbar.show('组合导出将在选股模块提供', 'info');
   };
+
+  const filteredHoldings = useMemo(
+    () => (summary?.holdings ?? []).filter((h) => matchesFilters(h, filters)),
+    [summary?.holdings, filters],
+  );
 
   return (
     <Box>
@@ -260,7 +315,8 @@ export default function PortfolioDashboard() {
 
           <Box sx={{ mt: 2 }}>
             <SectionCard title="持仓明细" icon={<ListAltIcon />}>
-              <HoldingsTable holdings={summary.holdings} onEdit={(h) => setHoldingDialog({ open: true, initial: h })} onDelete={(h) => setDeleteTarget(h)} />
+              <HoldingsFilter filters={filters} onChange={setFilters} />
+              <HoldingsTable holdings={filteredHoldings} onEdit={(h) => setHoldingDialog({ open: true, initial: h })} onDelete={(h) => setDeleteTarget(h)} />
             </SectionCard>
           </Box>
 
@@ -268,10 +324,12 @@ export default function PortfolioDashboard() {
             title="AI 持仓诊断"
             content={aiContent}
             loading={aiLoading}
+            streaming={aiStreaming}
+            elapsedSeconds={aiElapsedSeconds}
             cached={aiCached}
             generatedAt={aiGeneratedAt}
             onRefresh={() => loadAi(true)}
-            emptyText="点击「重新生成」获取 AI 持仓诊断（未配置 ZHIPU_API_KEY 时返回本地规则版）"
+            emptyText="点击「重新生成」获取 AI 持仓诊断（未配置 AI Key 时返回本地规则版）"
           />
         </>
       ) : (

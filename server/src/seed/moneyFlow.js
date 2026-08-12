@@ -13,7 +13,9 @@ import { round4 } from '../util/money.js';
  */
 export function seedMoneyFlow(db, items, barsByCode) {
   const tx = db.transaction(() => {
-    db.exec('DELETE FROM money_flow');
+    const codes = items.map((i) => i.code);
+    if (codes.length) db.deleteByCodes('money_flow', codes);
+    else db.exec('DELETE FROM money_flow');
     for (const item of items) {
       const bars = barsByCode.get(item.code);
       const last = bars ? bars[bars.length - 1] : null;
@@ -53,7 +55,9 @@ export function seedMoneyFlow(db, items, barsByCode) {
  */
 export function seedAuctionData(db, items, barsByCode) {
   const tx = db.transaction(() => {
-    db.exec('DELETE FROM auction_data');
+    const codes = items.map((i) => i.code);
+    if (codes.length) db.deleteByCodes('auction_data', codes);
+    else db.exec('DELETE FROM auction_data');
     for (const item of items) {
       const bars = barsByCode.get(item.code);
       if (!bars || bars.length < 2) continue;

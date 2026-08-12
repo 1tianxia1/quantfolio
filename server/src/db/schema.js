@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS securities (
   code            TEXT NOT NULL UNIQUE,
   name            TEXT NOT NULL,
   market          TEXT NOT NULL CHECK (market IN ('SH','SZ','BJ')),
-  type            TEXT NOT NULL CHECK (type IN ('stock','fund','index')),
+  type            TEXT NOT NULL CHECK (type IN ('stock','fund','index','bond','other')),
   board           TEXT NOT NULL,
   price_limit_pct REAL NOT NULL,
   industry        TEXT,
@@ -185,11 +185,36 @@ CREATE TABLE IF NOT EXISTS holdings (
   asset_class TEXT NOT NULL CHECK (asset_class IN ('stock','fund','cash','bond','other')),
   quantity    REAL NOT NULL CHECK (quantity >= 0),
   cost_price  REAL NOT NULL DEFAULT 0,
+  -- 导入持仓时由截图 OCR 回填的「现价」：对本地行情库未覆盖的标的（如券商 App 截图里的
+  -- 黄金ETF/小票），用它替代 daily_quotes 回退成本价，保证市值/盈亏与截图一致。可空。
+  current_price REAL,
+  -- 截图 OCR 回填的累计盈亏金额/率（优先于重新计算，保证与券商 App 截图完全一致）
+  profit REAL,
+  profit_rate REAL,
+  -- 截图 OCR 回填的当日盈亏金额/率（优先于行情计算；无行情标的如黄金ETF 必须用它）
+  day_profit REAL,
+  day_profit_rate REAL,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id);
+
+-- 10.5) 场外基金净值（天天基金每日披露；与 daily_quotes 解耦，
+--       按代码取各自最新 nav_date，天然支持「休息日显示最后一个交易日」）
+--       场内 ETF 走 daily_quotes（市价），场外联接/LOF/QDII 走本表（净值）。
+CREATE TABLE IF NOT EXISTS fund_nav (
+  code         TEXT NOT NULL,
+  nav_date     TEXT NOT NULL,
+  nav          REAL NOT NULL,
+  pre_nav      REAL,
+  nav_chg_pct  REAL,
+  is_estimate  INTEGER NOT NULL DEFAULT 0,
+  data_origin  TEXT NOT NULL DEFAULT 'real' CHECK (data_origin IN ('real','derived','mixed')),
+  PRIMARY KEY (code, nav_date),
+  FOREIGN KEY (code) REFERENCES securities(code)
+);
+CREATE INDEX IF NOT EXISTS idx_fn_code_date ON fund_nav(code, nav_date DESC);
 
 -- 11) 目标配置（同一 dimension 下 Σtarget_pct=100，应用层校验）
 CREATE TABLE IF NOT EXISTS target_allocations (
@@ -320,4 +345,42 @@ CREATE INDEX IF NOT EXISTS idx_ps_run ON pipeline_steps(run_id, seq);
  */
 export function initSchema(db) {
   db.exec(DDL);
+
+  // 存量库迁移：holdings 增加 current_price / profit / profit_rate / day_profit / day_profit_rate 列
+  //（图片导入回填的截现价值与盈亏；幂等）
+  const newHoldingsCols = ['current_price', 'profit', 'profit_rate', 'day_profit', 'day_profit_rate'];
+  try {
+    const cols = db.all("PRAGMA table_info(holdings)");
+    for (const col of newHoldingsCols) {
+      if (!cols.some((c) => c.name === col)) {
+        db.exec(`ALTER TABLE holdings ADD COLUMN ${col} REAL`);
+      }
+    }
+  } catch (e) {
+    console.warn('[schema] holdings 列迁移跳过:', e.message);
+  }
+
+  // 1.3 自选模块增强：分组表 + watchlist.group_id/category/note（幂等迁移）
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS watchlist_groups (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id   INTEGER NOT NULL,
+      name      TEXT NOT NULL,
+      category  TEXT NOT NULL DEFAULT 'all' CHECK (category IN ('all','a_share','fund')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (user_id, name)
+    )`);
+    const wcols = db.all("PRAGMA table_info(watchlist)");
+    if (!wcols.some((c) => c.name === 'group_id')) {
+      db.exec(`ALTER TABLE watchlist ADD COLUMN group_id INTEGER REFERENCES watchlist_groups(id)`);
+    }
+    if (!wcols.some((c) => c.name === 'category')) {
+      db.exec(`ALTER TABLE watchlist ADD COLUMN category TEXT NOT NULL DEFAULT 'a_share' CHECK (category IN ('a_share','fund'))`);
+    }
+    if (!wcols.some((c) => c.name === 'note')) {
+      db.exec(`ALTER TABLE watchlist ADD COLUMN note TEXT`);
+    }
+  } catch (e) {
+    console.warn('[schema] watchlist 1.3 迁移跳过:', e.message);
+  }
 }

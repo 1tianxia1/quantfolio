@@ -7,12 +7,20 @@ import TopBar from './TopBar';
 import SideBar from './SideBar';
 import DisclaimerBar from './DisclaimerBar';
 import { Outlet } from 'react-router-dom';
+import { useState, useEffect } from 'react';
 import { useUiStore } from '../../store/uiStore';
-import { DATA_LINEAGE_NOTICE } from '@shared/constants';
+import { marketApi } from '../../api/market';
 
 export default function AppLayout() {
   const collapsed = useUiStore((s) => s.sidebarCollapsed);
   const sidebarWidth = collapsed ? 64 : 220;
+  const [compliance, setCompliance] = useState<string>('行情数据加载中...');
+
+  useEffect(() => {
+    marketApi.meta()
+      .then((m) => { if (m?.compliance) setCompliance(m.compliance); })
+      .catch(() => {});
+  }, []);
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', flexDirection: 'column' }}>
@@ -45,7 +53,7 @@ export default function AppLayout() {
               }}
             >
               <InfoIcon fontSize="small" sx={{ color: 'primary.main', flexShrink: 0 }} />
-              <span>{DATA_LINEAGE_NOTICE}</span>
+              <span>{compliance}</span>
             </Box>
             <Outlet />
           </Box>

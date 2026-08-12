@@ -7,9 +7,15 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// 优先加载项目根 .env，再加载 server/.env（后者覆盖）
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+// 优先级（高 → 低）：真实 shell 环境变量 > server/.env > 项目根 .env
+//
+// ⚠️ dotenv 的语义是「已存在的键不覆盖」（首个写入者获胜），而**不是**后加载者覆盖。
+//    因此要让 server/.env 压过根 .env，必须**先**加载 server/.env。
+//    早先的写法是先根后 server 并注释「后者覆盖」——实际不生效，
+//    导致根 .env 里的 DATA_PROVIDER=sqlite 永远压住 server/.env 的设置。
+//    这里同时保证：shell 里显式导出的变量（如 DB_PATH=xxx node ...）依然最高优先。
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 /** 默认值兜底 + 基础解析 */
 function str(name, fallback = '') {
@@ -39,10 +45,15 @@ const env = {
   AI_API_KEY: str('AI_API_KEY', ''),
   AI_MODEL: str('AI_MODEL', 'deepseek-ai/DeepSeek-V4-Flash'),
   AI_BASE_URL: str('AI_BASE_URL', 'https://api.siliconflow.cn/v1/chat/completions'),
-  AI_TIMEOUT_MS: num('AI_TIMEOUT_MS', 20000),
+  AI_TIMEOUT_MS: num('AI_TIMEOUT_MS', 180000),
+  // AI 大模型请求是否默认开启流式（OpenAI 兼容协议）
+  AI_STREAM: str('AI_STREAM', 'true'),
   // 图片识别专用视觉模型（OpenAI 兼容 /chat/completions，支持 image_url）
   AI_VISION_MODEL: str('AI_VISION_MODEL', 'Qwen/Qwen3-VL-32B-Instruct'),
   AI_VISION_TIMEOUT_MS: num('AI_VISION_TIMEOUT_MS', 60000),
+  // 图片识别视觉调用的重试次数（不含首次请求），应对偶发超时 / 上游 5xx / 网络抖动。
+  // 32B 视觉模型偶尔慢一拍，单次失败即报错体验极差；每次重试指数退避 1s→2s→4s…上限 5s。
+  AI_VISION_MAX_RETRIES: num('AI_VISION_MAX_RETRIES', 2),
 
   MARKET_API_BASE: str('MARKET_API_BASE', ''),
   // 可选：指向一个能代理通达信连接器 lookup 的 HTTP 桥接服务；配置后后端可按代码实时解析并写回本地缓存
@@ -75,6 +86,7 @@ const env = {
   EM_SNAPSHOT_FULL: str('EM_SNAPSHOT_FULL', 'false'),   // 全市场快照走东财（建议仅离线刷库开启）
   EM_SNAPSHOT_MAX_PAGES: num('EM_SNAPSHOT_MAX_PAGES', 60),
   EM_VERBOSE: str('EM_VERBOSE', 'false'),         // 打印每次东财请求耗时
+  EM_KLINE_SOURCE: str('EM_KLINE_SOURCE', 'auto'),  // K 线主源：auto=东财优先回退腾讯 / tencent=直走腾讯 / eastmoney=仅东财
   EM_NEWS_TTL_MS: num('EM_NEWS_TTL_MS', 180000),  // 东财新闻/公告/研报缓存 3 分钟
 
   // ---------- 实时联网检索（架构 §6.2 双路并联）----------
@@ -88,6 +100,11 @@ const env = {
   WEB_SEARCH_ZHIPU_URL: str('WEB_SEARCH_ZHIPU_URL', 'https://open.bigmodel.cn/api/paas/v4/web_search'),
   WEB_SEARCH_ZHIPU_ENGINE: str('WEB_SEARCH_ZHIPU_ENGINE', 'search_std'),
   WEB_SEARCH_CACHE_TTL_MS: num('WEB_SEARCH_CACHE_TTL_MS', 120000), // 同 query 2 分钟内复用
+
+  // ---------- 真实行情定时刷新（回填 daily_quotes + 重算派生表）----------
+  // 默认关闭：全量刷新涉及数万只标的，需用户在 server/.env 显式开启。
+  AUTO_REFRESH_ENABLED: str('AUTO_REFRESH_ENABLED', 'false'),
+  AUTO_REFRESH_INTERVAL_MS: num('AUTO_REFRESH_INTERVAL_MS', 6 * 3600 * 1000),
 
   // ---------- 分析中心 ----------
   ANALYSIS_KLINE_WINDOW: num('ANALYSIS_KLINE_WINDOW', 120),

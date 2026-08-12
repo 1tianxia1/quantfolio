@@ -58,11 +58,42 @@ const http = createHttpClient(30000);
  */
 export const httpLong = createHttpClient(90000);
 
-/** 解包统一信封；非 success 抛错 */
+/**
+ * 解包统一信封；非 success 抛错。
+ * 关键点：axios 对非 2xx 响应会直接 reject，因此这里用 try/catch 包裹 await，
+ * 在 catch 中优先读取后端信封的 message（而非 axios 原始的 "409 Conflict" 文案）。
+ */
 export async function unwrap<T>(promise: Promise<{ data: ApiEnvelope<T> }>): Promise<T> {
-  const res = await promise;
+  let res: { data: ApiEnvelope<T> };
+  try {
+    res = await promise;
+  } catch (error) {
+    // axios 抛出的错误，可能携带后端错误信封（error.response.data）
+    const axiosError = error as {
+      response?: { status?: number; data?: Partial<ApiEnvelope> };
+    };
+    const env = axiosError.response?.data;
+    const backendMessage =
+      typeof env?.message === 'string' && env.message.trim().length > 0
+        ? env.message
+        : '';
+    if (backendMessage) {
+      // 优先使用后端返回的 message，并附带 code 与 status 字段
+      const err = new Error(backendMessage) as Error & {
+        code?: number;
+        status?: number;
+      };
+      err.code = env?.code;
+      err.status = axiosError.response?.status;
+      throw err;
+    }
+    // 无可解析信封（网络错误/超时/500 无 JSON body）：保留原始 axios 错误兜底，不吞错
+    throw error;
+  }
+
   const env = res.data;
   if (!env.success) {
+    // 兼容后端返回 2xx + success:false 的情况
     const err = new Error(env.message || '请求失败') as Error & { code?: number };
     err.code = env.code;
     throw err;

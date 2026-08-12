@@ -245,3 +245,27 @@ describe('normalizeCandidate —— 端到端（OCR 行 → 入库候选）', ()
     expect(normalizeCandidate(null)).toBeNull();
   });
 });
+
+describe('inferAssetClass —— 场内 ETF vs 场外基金（防 ¥0.0000 回归）', () => {
+  it('场内 ETF（黄金ETF华安）按股票口径 → stock，避免金额÷净值把份额算错', () => {
+    const c = normalizeCandidate({ name: '黄金ETF华安', quantity: 600, cost_price: 9.173, current_price: 9.005 });
+    expect(c.asset_class).toBe('stock');
+    // 不被当作场外基金走 convertFundAmountToShares，份额保持截图原值
+    expect(c.quantity).toBe(600);
+  });
+
+  it('场内 ETF（沪深300ETF）同样按股票口径 → stock', () => {
+    const c = normalizeCandidate({ name: '沪深300ETF', quantity: 100, cost_price: 3.8, current_price: 3.9 });
+    expect(c.asset_class).toBe('stock');
+  });
+
+  it('场外 ETF 联接（华宝…ETF联接C）仍是 fund，走金额÷净值换算', () => {
+    const c = normalizeCandidate({ name: '华宝中证有色金属ETF联接C', quantity: 4028, cost_price: 1, profit: -163.92 });
+    expect(c.asset_class).toBe('fund');
+  });
+
+  it('场外 QDII/LOF/FOF 仍是 fund', () => {
+    expect(normalizeCandidate({ name: '某纳斯达克LOF', quantity: 100, cost_price: 1 }).asset_class).toBe('fund');
+    expect(normalizeCandidate({ name: '某全球QDII', quantity: 100, cost_price: 1 }).asset_class).toBe('fund');
+  });
+});

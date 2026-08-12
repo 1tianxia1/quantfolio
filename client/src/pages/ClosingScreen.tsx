@@ -19,7 +19,6 @@ import { useAuthStore } from '../store/authStore';
 import { useAiConfigStore } from '../store/aiConfigStore';
 import { useNavigate } from 'react-router-dom';
 import WbTwilightIcon from '@mui/icons-material/WbTwilight';
-import { TRADE_DATE } from '@shared/constants';
 import PageHeader from '../components/common/PageHeader';
 import SectionCard from '../components/common/SectionCard';
 
@@ -33,9 +32,12 @@ export default function ClosingScreen() {
   const [selectedPreset, setSelectedPreset] = useState<Strategy | null>(null);
   const [steps, setSteps] = useState<PipelineStepConfig[]>([]);
   const [pipeline, setPipeline] = useState<PipelineResult | null>(null);
+  // 严格五步法 0 命中时自动放宽，保证有数据可看
+  const [relaxed, setRelaxed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [marketTotal, setMarketTotal] = useState(97);
   const [demoMode, setDemoMode] = useState(false);
+  const [tradeDate, setTradeDate] = useState<string>('--');
 
   const [conditions, setConditions] = useState<ClosingConditions>({
     universe: { excludeST: true, excludeNew: true, types: ['stock'] },
@@ -60,10 +62,12 @@ export default function ClosingScreen() {
       try {
         const overview = await marketApi.overview();
         setMarketTotal(overview.stock_count);
-        const meta = await marketApi.meta().catch(() => null);
-        if (meta?.lineage) {
-          setDemoMode(Object.values(meta.lineage).some((v) => typeof v === 'string' && v.includes('derived')));
-        }
+        const [meta, status] = await Promise.all([
+          marketApi.meta().catch(() => null),
+          marketApi.status().catch(() => null),
+        ]);
+        if (meta?.trade_date) setTradeDate(meta.trade_date);
+        setDemoMode(!(status?.realtimeEnabled));
         const p = await screenerApi.presets();
         setPresets(p.closing);
         const defaultPreset = p.closing.find((s) => s.type === 'pipeline_closing') || p.closing[0];
@@ -88,11 +92,28 @@ export default function ClosingScreen() {
     }
   };
 
-  const runPipeline = useCallback(async (st = steps) => {
+  // 尾盘五步法「放宽」：关闭放量连日限制，放宽 市值/涨幅/换手 区间
+  const buildRelaxedSteps = (st: PipelineStepConfig[]): PipelineStepConfig[] =>
+    st.map((s) => {
+      if (s.id === 'vol_streak') return { ...s, enabled: false };
+      if (s.id === 'mv50_500') return { ...s, params: { ...s.params, min: 20, max: 8000 } };
+      if (s.id === 'pct3_5') return { ...s, params: { ...s.params, min: 1, max: 9 } };
+      if (s.id === 'turnover5_20') return { ...s, params: { ...s.params, min: 3, max: 25 } };
+      return s;
+    });
+
+  const runPipeline = useCallback(async (st = steps, autoRelax = true) => {
     setLoading(true);
     try {
       const r = await screenerApi.runPipeline({ type: 'closing', steps: st });
       setPipeline(r);
+      if (r.items.length === 0 && autoRelax) {
+        const rr = await screenerApi.runPipeline({ type: 'closing', steps: buildRelaxedSteps(st) });
+        setPipeline(rr);
+        setRelaxed(true);
+      } else {
+        setRelaxed(false);
+      }
       return r;
     } catch (e) {
       snackbar.show((e as Error).message, 'error');
@@ -101,6 +122,17 @@ export default function ClosingScreen() {
       setLoading(false);
     }
   }, [steps, snackbar]);
+
+  // 手动切换严格/放宽
+  const toggleRelax = () => {
+    if (relaxed) {
+      setRelaxed(false);
+      void runPipeline(steps, false);
+    } else {
+      setRelaxed(true);
+      void runPipeline(buildRelaxedSteps(steps), false);
+    }
+  };
 
   const runGeneral = useCallback(async (cond = conditions) => {
     setGeneralLoading(true);
@@ -175,7 +207,7 @@ export default function ClosingScreen() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `quantfolio_closing_${TRADE_DATE.replace(/-/g, '')}.csv`;
+      a.download = `quantfolio_closing_${(tradeDate || '').replace(/-/g, '')}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       snackbar.show('CSV 已导出（UTF-8 BOM）', 'success');
@@ -201,7 +233,7 @@ export default function ClosingScreen() {
       )}
       <PageHeader
         title="尾盘选股器"
-        subtitle={`交易日：${TRADE_DATE} · 五步法漏斗 / 量化指标筛选`}
+        subtitle={`交易日：${tradeDate} · 五步法漏斗 / 量化指标筛选`}
         icon={<WbTwilightIcon />}
         actions={
           <>
@@ -241,9 +273,22 @@ export default function ClosingScreen() {
                     ))}
                   </Box>
                 )}
+                {relaxed && pipeline && pipeline.items.length > 0 && (
+                  <Alert
+                    severity="info"
+                    sx={{ mb: 1, fontSize: 12 }}
+                    action={
+                      <Button size="small" color="inherit" onClick={toggleRelax} sx={{ whiteSpace: 'nowrap' }}>
+                        还原严格五步法
+                      </Button>
+                    }
+                  >
+                    严格五步法 0 命中，已自动放宽（关闭「连续放量」、放宽市值/涨幅/换手区间）展示 {pipeline.items.length} 只。
+                  </Alert>
+                )}
                 {pipeline && pipeline.items.length === 0 && (
                   <Alert severity="info" sx={{ mb: 1, fontSize: 12 }}>
-                    {pipeline.dataHint || '当前无标的同时满足 5 步条件（形态严格属正常），可尝试关闭部分步骤或切换通用筛选。'}
+                    {pipeline.dataHint || '当前严格五步法与放宽版均无命中（行情数据或形态条件限制）。可切换「通用指标筛选」放宽更多维度。'}
                   </Alert>
                 )}
               </>

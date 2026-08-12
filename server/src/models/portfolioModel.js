@@ -33,21 +33,39 @@ export function createPortfolioModel(db) {
       return db.get('SELECT * FROM holdings WHERE user_id IS ? AND id = ?', [userId, id]);
     },
 
-    createHolding(userId, { code, name, asset_class, quantity, cost_price }) {
+    findHoldingByCode(userId, code) {
+      const normalized = normalizeCode(code);
+      if (!normalized) return null;
+      return db.get('SELECT * FROM holdings WHERE user_id IS ? AND code IS ?', [userId, normalized]);
+    },
+
+    createHolding(userId, { code, name, asset_class, quantity, cost_price, current_price, profit, profit_rate, day_profit, day_profit_rate }) {
       const r = db.run(
-        `INSERT INTO holdings (user_id, code, name, asset_class, quantity, cost_price)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [userId, normalizeCode(code), name, asset_class, quantity, cost_price ?? 0],
+        `INSERT INTO holdings (user_id, code, name, asset_class, quantity, cost_price, current_price, profit, profit_rate, day_profit, day_profit_rate)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, normalizeCode(code), name, asset_class, quantity, cost_price ?? 0,
+         current_price != null && Number.isFinite(Number(current_price)) ? Number(current_price) : null,
+         profit != null && Number.isFinite(Number(profit)) ? Number(profit) : null,
+         profit_rate != null && Number.isFinite(Number(profit_rate)) ? Number(profit_rate) : null,
+         day_profit != null && Number.isFinite(Number(day_profit)) ? Number(day_profit) : null,
+         day_profit_rate != null && Number.isFinite(Number(day_profit_rate)) ? Number(day_profit_rate) : null],
       );
       return this.getHolding(userId, Number(r.lastInsertRowid));
     },
 
-    updateHolding(userId, id, { code, name, asset_class, quantity, cost_price }) {
+    updateHolding(userId, id, { code, name, asset_class, quantity, cost_price, current_price, profit, profit_rate, day_profit, day_profit_rate }) {
       db.run(
         `UPDATE holdings SET code = ?, name = ?, asset_class = ?, quantity = ?, cost_price = ?,
+                current_price = ?, profit = ?, profit_rate = ?, day_profit = ?, day_profit_rate = ?,
                 updated_at = datetime('now')
          WHERE user_id IS ? AND id = ?`,
-        [normalizeCode(code), name, asset_class, quantity, cost_price ?? 0, userId, id],
+        [normalizeCode(code), name, asset_class, quantity, cost_price ?? 0,
+         current_price != null && Number.isFinite(Number(current_price)) ? Number(current_price) : null,
+         profit != null && Number.isFinite(Number(profit)) ? Number(profit) : null,
+         profit_rate != null && Number.isFinite(Number(profit_rate)) ? Number(profit_rate) : null,
+         day_profit != null && Number.isFinite(Number(day_profit)) ? Number(day_profit) : null,
+         day_profit_rate != null && Number.isFinite(Number(day_profit_rate)) ? Number(day_profit_rate) : null,
+         userId, id],
       );
       return this.getHolding(userId, id);
     },

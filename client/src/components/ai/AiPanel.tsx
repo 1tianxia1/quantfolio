@@ -17,6 +17,10 @@ interface AiPanelProps {
   generatedAt?: string;
   onRefresh: () => void;
   emptyText?: string;
+  /** 是否处于流式生成中 */
+  streaming?: boolean;
+  /** 已经等待的秒数（用于倒计时展示） */
+  elapsedSeconds?: number;
 }
 
 /** 将 Markdown 按 ## 小节切分渲染 */
@@ -55,7 +59,7 @@ function renderMarkdownSections(text: string) {
   });
 }
 
-export default function AiPanel({ title, content, loading, cached, generatedAt, onRefresh, emptyText = '点击「生成」获取 AI 分析' }: AiPanelProps) {
+export default function AiPanel({ title, content, loading, cached, generatedAt, onRefresh, emptyText = '点击「生成」获取 AI 分析', streaming = false, elapsedSeconds = 0 }: AiPanelProps) {
   const [refreshing, setRefreshing] = useState(false);
   const { displayActive, displayLabel, hasKey } = useAiConfigStore();
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
@@ -111,12 +115,19 @@ export default function AiPanel({ title, content, loading, cached, generatedAt, 
             前往「模型设置」配置
           </Button>
         </Box>
-      ) : loading ? (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 2 }}>
-          <CircularProgress size={18} />
-          <Typography variant="body2" color="text.secondary">
-            AI 正在分析中，最多等待 20 秒…
-          </Typography>
+      ) : loading || streaming ? (
+        <Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1 }}>
+            <CircularProgress size={18} />
+            <Typography variant="body2" color="text.secondary">
+              AI 正在分析中，已等待 {elapsedSeconds}s / 最长 180s…
+            </Typography>
+          </Box>
+          {content && (
+            <Box sx={{ maxHeight: 360, overflowY: 'auto', opacity: 0.85, pt: 1 }}>
+              {renderMarkdownSections(content)}
+            </Box>
+          )}
         </Box>
       ) : content ? (
         <Box sx={{ maxHeight: 420, overflowY: 'auto' }}>{renderMarkdownSections(content)}</Box>
