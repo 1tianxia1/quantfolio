@@ -134,6 +134,20 @@ export default function ClosingScreen() {
     }
   };
 
+  // 批量勾选：全选 / 取消勾选（全不选 = 查看全市场所有可筛股票，再按勾选逐步过滤）
+  const selectAllSteps = () => {
+    const next = steps.map((s) => ({ ...s, enabled: true }));
+    setSteps(next);
+    setRelaxed(false);
+    void runPipeline(next, false);
+  };
+  const deselectAllSteps = () => {
+    const next = steps.map((s) => ({ ...s, enabled: false }));
+    setSteps(next);
+    setRelaxed(false);
+    void runPipeline(next, false);
+  };
+
   const runGeneral = useCallback(async (cond = conditions) => {
     setGeneralLoading(true);
     try {
@@ -261,6 +275,13 @@ export default function ClosingScreen() {
 
             {mode === 'pipeline' ? (
               <>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                  <Button size="small" variant="outlined" onClick={selectAllSteps} disabled={!steps.length}>全选</Button>
+                  <Button size="small" variant="outlined" onClick={deselectAllSteps} disabled={!steps.length}>取消勾选</Button>
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                    勾选即过滤，全不选=看全市场
+                  </Typography>
+                </Box>
                 {steps.length > 0 && (
                   <Box sx={{ mb: 1 }}>
                     {steps.map((s) => (

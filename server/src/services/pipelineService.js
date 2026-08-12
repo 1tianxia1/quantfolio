@@ -68,7 +68,9 @@ export function createPipelineService(db) {
     const sectorHeat = buildSectorHeatMap(db);
     const mainlineTier = buildMainlineTier(db, req.steps || [], type);
 
-    let pool = codes;
+    // 初始池：仅保留「有快照数据」的股票。无快照代码若进入后续评分会 snap.code 抛错，
+    // 且对选股无意义（无法按任何指标过滤）。这样「全不选」时返回全市场所有可筛股票而不崩。
+    let pool = codes.filter((c) => snapByCode.has(c));
     const funnel = [];
     const hits = new Map(); // code -> Set(步骤标签)
 
