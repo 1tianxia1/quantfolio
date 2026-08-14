@@ -188,17 +188,39 @@ function rankStepFilter(step, pool, snapByCode, ctx) {
     let ok = true;
     if (step.id === 'auction_top60') {
       key = snap.auction_pct;
-      if (key == null) { ok = false; reasons.push({ code, reason: '竞价数据缺失' }); }
+      if (key == null) {
+        ok = false;
+        reasons.push({ code, reason: '竞价涨幅数据缺失' });
+      }
     } else {
       // 早盘第 2 步 vol_ratio_top30：实现为「量比 ≥ min 且按量比降序取 TopN」的 AND 语义，
       // 比用户原文「取 Top30；或量比≥1.5」更严格，属于保守取舍（防止放量不足的僵尸股混入）
       key = snap.volume_ratio;
-      if (key == null) { ok = false; reasons.push({ code, reason: '量比数据缺失' }); }
-      else if (p.min != null && key < p.min) { ok = false; reasons.push({ code, reason: `量比不足${p.min}` }); }
+      if (key == null) {
+        ok = false;
+        reasons.push({ code, reason: '量比数据缺失' });
+      } else if (p.min != null && key < p.min) {
+        ok = false;
+        reasons.push({ code, reason: `量比不足${p.min}` });
+      }
     }
     if (ok) scored.push({ code, key });
     else fail.push(code);
   }
+
+  // 如果没有有效数据，全部淘汰（避免静默通过）
+  if (scored.length === 0) {
+    for (const code of pool) {
+      fail.push(code);
+      if (step.id === 'auction_top60') {
+        reasons.push({ code, reason: '竞价涨幅数据缺失' });
+      } else {
+        reasons.push({ code, reason: '量比数据缺失' });
+      }
+    }
+    return { pass: [], fail, reasons };
+  }
+
   scored.sort((a, b) => (b.key ?? -Infinity) - (a.key ?? -Infinity));
   const keep = scored.slice(0, topN).map((s) => s.code);
   const drop = scored.slice(topN).map((s) => s.code);
@@ -279,8 +301,8 @@ function closingStepCheck(id, snap, p) {
       if (!bullish) return { ok: false, reason: '非多头排列' };
       // ② 上方空间 ≥ minSpace%
       const space = snap.high_60d_distance_pct;
-      // 上方空间数据缺失时放行（不淘汰），避免静默 0 命中
-      if (space == null) return { ok: true, reason: '' };
+      // 上方空间数据缺失时淘汰（不再放行）
+      if (space == null) return { ok: false, reason: '上方空间数据缺失' };
       if (space < p.minSpace) return { ok: false, reason: `上方空间不足${p.minSpace}%` };
       return { ok: true, reason: '' };
     }
@@ -305,15 +327,15 @@ function morningStepCheck(id, snap, p, ctx) {
     }
     case 'auction3_5': {
       const v = snap.auction_pct;
-      if (v == null) return { ok: false, reason: '竞价数据缺失' };
+      if (v == null) return { ok: false, reason: '竞价涨幅数据缺失' };
       if (v < p.min) return { ok: false, reason: `竞价涨幅不足${p.min}%` };
       if (v > p.max) return { ok: false, reason: `竞价涨幅超${p.max}%` };
       return { ok: true, reason: '' };
     }
     case 'mv_lt10': {
       const v = snap.circ_mv;
-      // 市值数据缺失时放行（不淘汰），避免静默 0 命中
-      if (v == null) return { ok: true, reason: '' };
+      // 市值数据缺失时淘汰（不再放行）
+      if (v == null) return { ok: false, reason: '流通市值数据缺失' };
       const threshold = ctx.looseMode ? (p.looseMax ?? MORNING_LOOSE_MV) : p.max;
       if (v >= threshold) return { ok: false, reason: `市值超${threshold}亿（非小盘）` };
       return { ok: true, reason: '' };
@@ -336,9 +358,8 @@ function morningStepCheck(id, snap, p, ctx) {
     }
     case 'first_trade_vol': {
       const v = snap.first_trade_vol_ratio;
-      // 首笔量比字段当前数据源普遍缺失 → 缺失时放行（不淘汰），字段存在时仍按阈值过滤。
-      // 这是早盘七步法此前「全市场 0 命中」的首要根因。
-      if (v == null) return { ok: true, reason: '' };
+      // 首笔量比字段当前数据源普遍缺失 → 缺失时淘汰（不再放行）
+      if (v == null) return { ok: false, reason: '首笔量比数据缺失' };
       if (v < p.min) return { ok: false, reason: `首笔量比不足${p.min}` };
       return { ok: true, reason: '' };
     }
