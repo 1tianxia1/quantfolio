@@ -8,6 +8,7 @@ import { createApp } from './app.js';
 import { refreshRealData } from './services/realDataRefresher.js';
 import { createFundNavService } from './services/fundNavService.js';
 import { start as startIntradayPoller } from './services/intradayPoller.js';
+import startMarketScheduler from './services/marketScheduler.js';
 
 async function main() {
   console.log('[QuantFolio] 正在初始化数据库 ...');
@@ -31,6 +32,9 @@ async function main() {
 
     // 启动盘中实时行情轮询（每 30s 更新持仓标的当天行情到 daily_quotes）
     intradayPoller = startIntradayPoller(db);
+
+    // 启动全市场调度器（竞价窗口、全市场快照、收盘全量回填）
+    const scheduler = startMarketScheduler(db);
 
     // 启动后异步同步场外基金净值（不阻塞启动；失败仅告警，不影响主流程）
     (async () => {
@@ -89,6 +93,10 @@ async function main() {
     if (intradayPoller) {
       intradayPoller.stop();
       console.log('[intraday] 盘中轮询已停止');
+    }
+    if (scheduler) {
+      scheduler.stop();
+      console.log('[scheduler] 全市场调度器已停止');
     }
     server.close(() => {
       console.log('[QuantFolio] HTTP 服务已关闭');

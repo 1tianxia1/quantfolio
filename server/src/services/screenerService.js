@@ -134,10 +134,10 @@ function checkMorning(snap, c, securities) {
   // ① 昨日涨跌幅区间
   if (c.prevPctChg) {
     const [lo, hi] = c.prevPctChg;
-    if (snap.pct_chg == null || snap.pct_chg < lo || snap.pct_chg > hi) {
-      return { pass: false, reasons: [`昨日涨幅 ${fmt(snap.pct_chg)}% 不在 ${lo}~${hi}`], tags };
+    if (snap.prev_pct_chg == null || snap.prev_pct_chg < lo || snap.prev_pct_chg > hi) {
+      return { pass: false, reasons: [`昨日涨幅 ${fmt(snap.prev_pct_chg)}% 不在 ${lo}~${hi}`], tags };
     }
-    tags.push(`昨涨${round2(snap.pct_chg)}%`);
+    tags.push(`昨涨${round2(snap.prev_pct_chg)}%`);
   }
 
   // ② 量比 ≥

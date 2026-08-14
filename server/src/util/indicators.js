@@ -110,18 +110,39 @@ export function kdj(highs, lows, closes, n = 9, kPeriod = 3, dPeriod = 3) {
 }
 
 /**
- * 连续放量天数：volume[t] > volume[t-1] 的连续计数（当前日往前数）
- * @param {number[]} volumes 成交量序列
- * @returns {number[]} 每根 K 线的连续放量天数（首根为 0）
+ * 连续放量天数（重新定义，对齐盘面语义）。
+ *
+ * 旧定义要求「逐日严格递增」(volume[t] > volume[t-1])，真实市场几乎不可能连续成立——
+ * 末根量能略缩即归零，导致「明明在放量却显示 0 日」。
+ *
+ * 新定义统计「连续放量日」数量：
+ *   某根 K 线为放量日 ⟺ 当日量 > 近 window 日均量 × threshold
+ *   默认 window=20、threshold=1.5，即量能明显高于「近 20 日常态均量」的 1.5 倍。
+ *
+ * ⚠️ 为什么用 20 日（而非 5 日）做基线：
+ *   若用 5 日均量做阈值基准，放量本身会不断抬高 5 日均量、阈值随之上涨，
+ *   导致持续放量到末端时「反被判定为 0 日」（自相矛盾）。
+ *   20 日均量代表更长周期的正常量能水位，一次 3~10 日的放量潮不会改变它，
+ *   因此「连续放量日」能真实累计到放量潮结束，与盘面观感一致。
+ *
+ * 连续计数从左侧累加，遇非放量日归零。形状保持「与输入等长、首根为 0」，
+ * 对下游 seed / snapshot / score 是 drop-in 替换。
+ *
+ * @param {number[]} volumes 成交量序列（升序）
+ * @param {object} [opts] { window=20, threshold=1.5 }
+ * @returns {number[]} 每根 K 线的连续放量天数（非放量日为 0）
  */
-export function volumeStreak(volumes) {
+export function volumeStreak(volumes, opts = {}) {
+  const window = opts.window ?? 20;
+  const threshold = opts.threshold ?? 1.5;
   const out = new Array(volumes.length).fill(0);
-  for (let i = 1; i < volumes.length; i++) {
-    if (volumes[i] > volumes[i - 1]) {
-      out[i] = out[i - 1] + 1;
-    } else {
-      out[i] = 0;
-    }
+  if (volumes.length === 0) return out;
+  const base = sma(volumes, window);
+  for (let i = 0; i < volumes.length; i++) {
+    const b = base[i];
+    const v = volumes[i];
+    const isVolumeDay = b != null && b > 0 && v != null && v > b * threshold;
+    out[i] = isVolumeDay ? (i > 0 ? out[i - 1] + 1 : 1) : 0;
   }
   return out;
 }

@@ -1,7 +1,7 @@
 // ============================================================
 // 我的自选页（基金自选 / A股自选双 Tab + 分组管理 + 实时行情）
 // ============================================================
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import {
   Box, Typography, Button, Alert, IconButton, Tabs, Tab, Select, MenuItem,
   Dialog, DialogTitle, DialogContent, TextField, Tooltip,
@@ -21,9 +21,12 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import PageHeader from '../components/common/PageHeader';
 import SectionCard from '../components/common/SectionCard';
 import KlineChart from '../components/charts/KlineChart';
+import { isMarketOpen } from '../util/tradingTime';
 
 const fmtVol = (v: number | null | undefined): string =>
   v == null ? '—' : v >= 1e8 ? (v / 1e8).toFixed(2) + '亿手' : (v / 1e4).toFixed(1) + '万手';
+const fmtTime = (v: string | null | undefined): string =>
+  v ? String(v).replace('T', ' ').slice(0, 16) : '—';
 const pctColor = (v: number | null | undefined): string =>
   v == null ? 'text.secondary' : v > 0 ? '#e53935' : v < 0 ? '#00897b' : 'text.secondary';
 
@@ -46,6 +49,9 @@ export default function WatchlistPage() {
   const [creating, setCreating] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
 
+  // 交易时段自动刷新定时器
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const loadGroups = useCallback(async () => {
     try { setGroups(await marketApi.watchlistGroups()); } catch (_e) { /* 静默 */ }
   }, []);
@@ -63,6 +69,39 @@ export default function WatchlistPage() {
 
   useEffect(() => { if (isLoggedIn()) loadGroups(); }, [isLoggedIn, loadGroups]);
   useEffect(() => { if (isLoggedIn()) load(); }, [load]);
+
+  // 交易时段自动刷新（15s）
+  useEffect(() => {
+    if (!isLoggedIn()) return;
+
+    const startAutoRefresh = () => {
+      // 清除已有定时器
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+      }
+      // 立即执行一次
+      load();
+      // 设置 15s 定时器
+      refreshTimerRef.current = setInterval(() => {
+        if (isMarketOpen()) {
+          load();
+        }
+      }, 15_000);
+    };
+
+    const stopAutoRefresh = () => {
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+
+    startAutoRefresh();
+
+    return () => {
+      stopAutoRefresh();
+    };
+  }, [isLoggedIn, load]);
 
   const createGroup = async () => {
     const name = newGroupName.trim();
@@ -124,6 +163,7 @@ export default function WatchlistPage() {
       return <span style={{ color: pctColor(chg) }}>{chg == null ? '—' : `${chg > 0 ? '+' : ''}${chg.toFixed(2)}`}</span>;
     } },
     { key: 'volume', label: '成交量', sortable: true, getSortValue: (w) => w.volume ?? -Infinity, render: (w) => fmtVol(w.volume) },
+    { key: 'created_at', label: '加入时间', sortable: true, getSortValue: (w) => w.created_at ?? '', render: (w) => fmtTime(w.created_at) },
     { key: 'note', label: '备注', render: (w) => (
       <Tooltip title={w.note || '点击添加备注'}>
         <IconButton size="small" onClick={() => openNote(w)}><NoteIcon fontSize="small" /></IconButton>

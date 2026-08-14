@@ -67,6 +67,16 @@ const env = {
   // httpAgent 未知通道会读 process.env.WEBSEARCH_USE_PROXY；此处显式声明便于文档化与单测覆盖
   WEB_SEARCH_USE_PROXY: str('WEB_SEARCH_USE_PROXY', 'false'),
 
+  // ---------- 东财解限流 PoC：代理池轮转（2026-08-12） ----------
+  // 生产机 push2his 被东财域名级封 IP、fflow 单 IP 限流 44 只即熔断。
+  // 配置 EM_PROXY_LIST（逗号分隔多出口代理）后，emClient 每次请求经 httpAgent
+  // 按 round-robin + 配额轮换取不同出口 IP 的 dispatcher，把单 IP 限流摊薄到多 IP。
+  // ⚠️ 未配置 EM_PROXY_LIST 时行为与原来完全一致（零风险）；本组参数仅在配置后生效。
+  EM_PROXY_LIST: str('EM_PROXY_LIST', ''),             // 逗号分隔代理 URL，如 'http://ip1:8080,http://ip2:8080'
+  EM_PROXY_QUOTA: num('EM_PROXY_QUOTA', 30),           // 每个代理最大请求配额（超过即强制轮换下一个；0=不限额）
+  EM_PROXY_FAIL_THRESHOLD: num('EM_PROXY_FAIL_THRESHOLD', 3), // 某代理连续失败 N 次即轮换并进入冷却
+  EM_PROXY_COOLDOWN_MS: num('EM_PROXY_COOLDOWN_MS', 60000),   // 失败轮换后的冷却时长（该代理暂停使用）
+
   // ---------- 东方财富数据源（DATA_PROVIDER=eastmoney 时生效，全部免 KEY） ----------
   // 三道闸参数：限频 / 缓存 / 熔断。默认值按「本地单人使用、自律不扰民」设定。
   EM_QPS: num('EM_QPS', 5),                       // 全局令牌桶速率
@@ -87,6 +97,7 @@ const env = {
   EM_SNAPSHOT_MAX_PAGES: num('EM_SNAPSHOT_MAX_PAGES', 60),
   EM_VERBOSE: str('EM_VERBOSE', 'false'),         // 打印每次东财请求耗时
   EM_KLINE_SOURCE: str('EM_KLINE_SOURCE', 'auto'),  // K 线主源：auto=东财优先回退腾讯 / tencent=直走腾讯 / eastmoney=仅东财
+  EM_QUOTE_SOURCE: str('EM_QUOTE_SOURCE', 'auto'),  // 实时快照源：auto=启动探测push2可用则实时否则delay / realtime=push2实时 / delay=push2delay镜像
   EM_NEWS_TTL_MS: num('EM_NEWS_TTL_MS', 180000),  // 东财新闻/公告/研报缓存 3 分钟
 
   // ---------- 实时联网检索（架构 §6.2 双路并联）----------

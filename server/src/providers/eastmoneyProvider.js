@@ -90,8 +90,8 @@ export function createEastmoneyProvider(db, options = {}) {
       high: em.high,
       low: em.low,
       pct_chg: em.pct_chg,
-      turnover_rate: em.turnover_rate,
-      volume_ratio: em.volume_ratio,
+      turnover_rate: em.turnover_rate ?? local?.turnover_rate ?? null,
+      volume_ratio: em.volume_ratio ?? local?.volume_ratio ?? null,
       amount: em.amount,
       volume: em.volume,
       circ_mv: em.circ_mv ?? local?.circ_mv ?? null,
@@ -105,6 +105,65 @@ export function createEastmoneyProvider(db, options = {}) {
       static_origin: local?.data_origin ?? null,
       source: 'eastmoney',
     };
+  }
+
+  /**
+   * 把腾讯实时快照 + 本地静态属性合成 DataProvider 的 Quote 结构
+   * （与 composeQuote 同构，行情数值来自腾讯 qt.gtimg.cn，data_origin='real'）
+   * @param {string} code 6 位裸码
+   * @param {object} t fetchQuotesTencent 归一化快照
+   * @param {object|null} local securities 行
+   * @returns {object} Quote
+   */
+  function composeTencentQuote(code, t, local) {
+    return {
+      code,
+      name: local?.name || null,
+      type: local?.type || guessType(code),
+      market: local?.market || marketFromCode(code, local?.type),
+      sector: local?.sector ?? null,
+      industry: local?.industry ?? null,
+      close: t.close,
+      pre_close: t.pre_close,
+      open: t.open,
+      high: t.high,
+      low: t.low,
+      pct_chg: t.pct_chg,
+      turnover_rate: local?.turnover_rate ?? null,
+      volume_ratio: local?.volume_ratio ?? null,
+      amount: t.amount,
+      volume: t.volume,
+      circ_mv: local?.circ_mv ?? null,
+      total_mv: local?.total_mv ?? null,
+      pe_ttm: local?.pe_ttm ?? null,
+      pb: local?.pb ?? null,
+      trade_date: t.trade_date,
+      data_origin: 'real',
+      static_origin: local?.data_origin ?? null,
+      source: 'tencent',
+    };
+  }
+
+  /** 批量腾讯报价 → Map(code → quote) */
+  async function toTencentMap(codes) {
+    const list = await client.fetchQuotesTencent(codes);
+    return new Map(list.map((q) => [q.code, q]));
+  }
+
+  /** 腾讯兜底后再补本地：东财熔断 / 全失败时，持仓页仍看得到实时价 */
+  async function quotesFromTencentThenLocal(codes) {
+    const tMap = await toTencentMap(codes);
+    const out = [];
+    for (const c of codes) {
+      const t = tMap.get(c);
+      if (t) {
+        out.push(composeTencentQuote(c, t, localSecurity(c)));
+      } else {
+        const local = fallback.getQuote(c);
+        if (local) out.push(local);
+      }
+    }
+    return out;
   }
 
   return {
@@ -127,23 +186,43 @@ export function createEastmoneyProvider(db, options = {}) {
     },
 
     /**
-     * 批量快照：一次 ulist.np 批量询价，缺失项逐个降级本地
+     * 批量快照：东财批量询价优先，缺失/熔断项用腾讯 qt.gtimg.cn 兜底，再补本地。
+     *
+     * 为什么不直接降级本地：生产机 push2his 被东财域名级封 IP，东财批量报价
+     * 大面积失败时会退回本地旧数据 → 持仓页「半小时还是昨天」。腾讯通道从服务端
+     * 直连可用（与 sectorQuoteService 同源），是更可靠的实时补位。
+     *
+     * 触发腾讯兜底的两种情形：
+     *   1) 东财熔断打开（连续失败触发的 30s 短路）→ 直接走腾讯，省去无谓等待；
+     *   2) 东财返回了但部分代码缺失（IP 封禁/部分超时）→ 只对缺失项补腾讯。
+     *
      * @param {string[]} codes 6 位裸码数组
      * @returns {Promise<object[]>} Quote 数组（顺序与输入一致，无效项剔除）
      */
     async getQuotes(codes) {
       const list = normalizeCodes(codes);
       if (list.length === 0) return [];
-      if (client.isCircuitOpen()) return fallback.getQuotes(list);
+
+      // 情形 1：东财熔断 → 直接腾讯兜底再补本地，绝不退回陈旧本地数据
+      if (client.isCircuitOpen()) {
+        return quotesFromTencentThenLocal(list);
+      }
 
       const emList = await client.fetchQuotes(list);
       const emMap = new Map(emList.map((q) => [q.code, q]));
 
+      // 情形 2：东财没覆盖到的代码 → 腾讯补位
+      const missing = list.filter((c) => !emMap.has(c));
+      const tMap = missing.length ? await toTencentMap(missing) : new Map();
+
       const out = [];
       for (const c of list) {
         const em = emMap.get(c);
+        const t = tMap.get(c);
         if (em) {
           out.push(composeQuote(c, em, localSecurity(c)));
+        } else if (t) {
+          out.push(composeTencentQuote(c, t, localSecurity(c)));
         } else {
           const local = fallback.getQuote(c);
           if (local) out.push(local);

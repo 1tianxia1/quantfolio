@@ -35,6 +35,30 @@ export const EM_HOST = Object.freeze({
 /** 东财前端公开固定串（非密钥，不含身份信息） */
 export const EM_UT = 'fa5fd1943c7b386f172d6893dbfba10b';
 
+// ------------------------------------------------------------
+// 行情主机选择（实时 push2 vs 延迟镜像 push2delay）
+//
+// 背景：quote/quotes/clist 原先固定走 push2delay（约 15 分钟延迟），
+//   集合竞价（9:15–9:25）时段完全拿不到竞价数据，盘中实时性也先天不足。
+//   push2 实时源在部分出口 IP（如腾讯云）会被风控拦截，故做成运行时可切换：
+//     · setQuoteHost(EM_HOST.PUSH2)       切实时（探测可达后由 emClient 自动调用）
+//     · setQuoteHost(EM_HOST.PUSH2_DELAY) 切回延迟镜像（默认值）
+//   端点定义用 getter 引用当前值，保证「一处改、全局生效」。
+// ------------------------------------------------------------
+let quoteHost = EM_HOST.PUSH2_DELAY;
+
+/** 当前行情主机（实时/延迟镜像） */
+export function getQuoteHost() {
+  return quoteHost;
+}
+
+/** 切换行情主机（仅接受 PUSH2 / PUSH2_DELAY 两个合法值） */
+export function setQuoteHost(host) {
+  if (host === EM_HOST.PUSH2 || host === EM_HOST.PUSH2_DELAY) {
+    quoteHost = host;
+  }
+}
+
 /** 请求头：伪装成普通浏览器访问，附 Referer 避免被风控直接拒绝 */
 export const EM_HEADERS = Object.freeze({
   'User-Agent':
@@ -216,10 +240,10 @@ export const CLIST_FS = Object.freeze({
 //   rateKey   : 限频器的端点子桶键
 // ------------------------------------------------------------
 export const emEndpoints = Object.freeze({
-  /** 单标的实时快照（push2delay：约 15 分钟延迟，本网络实测可用） */
+  /** 单标的实时快照（host 由 getQuoteHost() 动态决定：push2 实时 / push2delay 延迟镜像） */
   quote: Object.freeze({
     name: 'quote',
-    host: EM_HOST.PUSH2_DELAY,
+    get host() { return getQuoteHost(); },
     path: '/api/qt/stock/get',
     rateKey: 'stock.get',
     fieldMap: QUOTE_FIELD_MAP,
@@ -234,7 +258,7 @@ export const emEndpoints = Object.freeze({
   /** 批量实时快照（secids 逗号分隔，单次 ≤ BATCH_SECID_LIMIT） */
   quotes: Object.freeze({
     name: 'quotes',
-    host: EM_HOST.PUSH2_DELAY,
+    get host() { return getQuoteHost(); },
     path: '/api/qt/ulist.np/get',
     rateKey: 'ulist.np',
     fieldMap: LIST_FIELD_MAP,
@@ -275,7 +299,7 @@ export const emEndpoints = Object.freeze({
   /** 全市场/板块成分列表（分页） */
   clist: Object.freeze({
     name: 'clist',
-    host: EM_HOST.PUSH2_DELAY,
+    get host() { return getQuoteHost(); },
     path: '/api/qt/clist/get',
     rateKey: 'clist.get',
     fieldMap: LIST_FIELD_MAP,

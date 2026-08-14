@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { createPortfolioService } from '../services/portfolioService.js';
+import { createSecurityModel } from '../models/securityModel.js';
 import { createRebalanceService } from '../services/rebalanceService.js';
 import { createFundNavService } from '../services/fundNavService.js';
 import { recognizeHoldingsFromImages } from '../services/holdingImageService.js';
@@ -99,6 +100,7 @@ export function createPortfolioRoutes(db) {
   const portfolio = createPortfolioService(db);
   const rebalance = createRebalanceService(db);
   const fundNav = createFundNavService(db);
+  const model = createSecurityModel(db);
 
   /** 写操作前检查登录（游客 401 引导登录） */
   function requireWrite(req, _res, next) {
@@ -316,6 +318,31 @@ export function createPortfolioRoutes(db) {
       const codes = Array.isArray(req.body?.codes) ? req.body.codes : undefined;
       const result = await fundNav.syncFundNav({ codes });
       res.json(ok(result, '场外基金净值同步完成'));
+    } catch (e) { next(e); }
+  });
+
+  // ---------- 场外基金盘中估值落库（前端 JSONP 采集 fundgz 后推送；公开数据，游客可用） ----------
+  //  body: [{ code, gsz, gszzl, gztime, dwjz, jzrq }]
+  //  gsz=估算净值, gszzl=估算涨跌幅(%), gztime=估值时间(YYYY-MM-DD HH:mm), dwjz=最新官方单位净值, jzrq=官方净值日期
+  router.post('/fund-estimate', optionalAuth, async (req, res, next) => {
+    try {
+      const arr = req.body;
+      if (!Array.isArray(arr)) return next(ApiError.badRequest('body 必须是数组'));
+      // null 透传 null（不要让 Number(null)=0 污染判断），非数才置 null
+      const n = (v) => (v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+      const rows = arr
+        .filter((r) => r && typeof r.code === 'string' && r.code.trim())
+        .map((r) => ({
+          code: String(r.code).trim(),
+          gsz: n(r.gsz),
+          gszzl: n(r.gszzl),
+          gztime: typeof r.gztime === 'string' ? r.gztime : null,
+          dwjz: n(r.dwjz),
+          jzrq: typeof r.jzrq === 'string' ? r.jzrq : null,
+          data_origin: r.data_origin === 'tencent' ? 'tencent' : 'estimate',
+        }));
+      const saved = model.saveFundEstimates(rows);
+      res.json(ok({ saved: saved.length, total: rows.length }, '基金盘中估值已更新'));
     } catch (e) { next(e); }
   });
 

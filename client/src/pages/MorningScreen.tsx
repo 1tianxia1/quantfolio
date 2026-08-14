@@ -109,9 +109,11 @@ export default function MorningScreen() {
       // 严格版 0 命中 → 自动放宽，保证用户总能看到数据；放宽版仍 0 才算真没数据
       if (r.items.length === 0 && autoRelax) {
         const relaxedSteps = st.map((s) => ({ ...s, enabled: MORNING_RELAX_SKIP.includes(s.id) ? false : s.enabled }));
+        setSteps(relaxedSteps);
+        setRelaxed(true);
+        // 放宽后再次运行（避免只修改 steps 不触发查询）
         const rr = await screenerApi.runPipeline({ type: 'morning', steps: relaxedSteps, loose_mode: true });
         setPipeline(rr);
-        setRelaxed(true);
       } else {
         setRelaxed(false);
       }

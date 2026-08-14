@@ -35,6 +35,19 @@ export function createIndicatorService(db) {
       limitMap.get(l.code).push(l);
     }
 
+    // 对每只股票找上一根 K 线（trade_date < q.trade_date 的最后一根）
+    const prevPctChgMap = new Map();
+    for (const q of quotes) {
+      let prevPctChg = null;
+      const prev = [...indicators]
+        .filter((ind) => ind.code === q.code && ind.trade_date < q.trade_date)
+        .sort((a, b) => b.trade_date.localeCompare(a.trade_date))[0];
+      if (prev) {
+        prevPctChg = prev.pct_chg;
+      }
+      prevPctChgMap.set(q.code, prevPctChg);
+    }
+
     return quotes.map((q) => {
       const ind = indMap.get(q.code) || {};
       const flow = flowMap.get(q.code) || {};
@@ -65,6 +78,7 @@ export function createIndicatorService(db) {
         high: q.high,
         low: q.low,
         pct_chg: q.pct_chg,
+        prev_pct_chg: prevPctChgMap.get(q.code), // 上一交易日涨跌幅
         turnover_rate: q.turnover_rate,
         volume: q.volume,
         amount: q.amount,

@@ -44,6 +44,8 @@ export interface Holding {
   sector?: string | null;
   quote_date?: string | null;
   data_origin?: string;
+  /** 场外基金盘中估值的估值时间（YYYY-MM-DD HH:mm），data_origin='estimate' 时有效 */
+  estimate_time?: string | null;
 }
 
 export interface AllocationItem {

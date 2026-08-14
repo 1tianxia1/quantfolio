@@ -5,3 +5,43 @@ data/
 .env
 *.log
 .DS_Store
+
+# === 部署相关：含生产机 IP / SSH 密码等明文，切勿提交到公开仓库 ===
+DEPLOY_*.md
+FINAL_DEPLOY.md
+QUICK_DEPLOY.md
+DEPLOY_README.md
+DEPLOY_NOW.md
+DEPLOY_GUIDE.md
+deploy*.ps1
+deploy*.sh
+deploy-server.sh
+deploy-simple.ps1
+upload.sh
+upload_server.py
+
+# === 部署包 / 压缩产物 ===
+*.tar.gz
+*.tgz
+*.zip
+deploy.tar.gz
+quantfolio-deploy.tar.gz
+quantfolio-update*.tar.gz
+
+# === 构建缓存 ===
+*.tsbuildinfo
+
+# === 同花顺(ths)解锁 / 资金流探针与调研临时产物：非运行源码，勿提交到公开仓库 ===
+probe_watchlist_data.py
+docs/em_unlock_poc.md
+server/tests/emUnlockPoc.test.js
+server/scripts/akshare_ths_curl_gitee.js
+server/scripts/probe_*.mjs
+server/scripts/ths_conn_*.txt
+server/scripts/ths_conn_test.mjs
+server/scripts/prod_thstencent_probe_report.md
+server/scripts/sample_ggzjl_ajax.bin
+server/scripts/ths_feasibility_report_cookie.md
+server/scripts/ths_hexin_research*.mjs
+server/scripts/ths_hexin_research*_result.txt
+server/scripts/ths_live_*.js

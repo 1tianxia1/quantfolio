@@ -15,7 +15,8 @@
 // 不做业务判断、不碰数据库 —— 那是 eastmoneyProvider / quoteSyncService 的事。
 // ============================================================
 import env from '../config/env.js';
-import { getDispatcher } from '../util/httpAgent.js';
+import https from 'node:https';
+import { getDispatcher, reportFailure } from '../util/httpAgent.js';
 import { createRateLimiter } from '../util/rateLimiter.js';
 import { createTtlCache } from '../util/ttlCache.js';
 import { toSecid, tryNormalizeCode } from '../util/codeUtil.js';
@@ -31,6 +32,7 @@ import {
   KLT,
   FQT,
   CLIST_FS,
+  setQuoteHost,
 } from './emEndpoints.js';
 
 /** 代理通道名（对应 httpAgent 的 CHANNEL_FLAG.eastmoney） */
@@ -163,6 +165,32 @@ function validateKlineMapping(bars, secid) {
 }
 
 /**
+ * 探测 push2.eastmoney.com 实时源是否可达
+ * 用一只常见标的（sh600519 茅台）打一次 quote 端点，3s 超时。
+ * @returns {Promise<boolean>} true = 可用
+ */
+async function probeRealtimeHost() {
+  const url = `${EM_HOST.PUSH2}/api/qt/stock/get?secid=1.600519&fields=f43&ut=${EM_HOST.PUSH2_DELAY ? '' : ''}&_=${Date.now()}`;
+  // 简单 fetch，不走限频器/缓存/熔断（这是初始化阶段的一次性探测）
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(
+      `${EM_HOST.PUSH2}/api/qt/stock/get?secid=1.600519&fields=f43&ut=fa5fd1943c7b386f172d6893dbfba10b&invt=2&fltt=2&_=${Date.now()}`,
+      { signal: controller.signal, headers: EM_HEADERS },
+    );
+    clearTimeout(timer);
+    if (res.ok) {
+      const json = await res.json();
+      return !!(json?.data && json.data.f43 != null);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 创建东方财富客户端
  *
  * @param {object} [options] 覆盖配置（缺省读 config/env.js，便于单测注入）
@@ -197,7 +225,26 @@ export function createEmClient(options = {}) {
     // K 线主源：'auto'(默认)=东财优先、失败回退腾讯；'tencent'=直走腾讯不碰东财（云端被东财封 IP 时用）；
     // 'eastmoney'=仅东财、不做腾讯兜底（弱网调试用）
     klineSource: (options.klineSource ?? env.EM_KLINE_SOURCE ?? 'auto').toLowerCase(),
+    // 实时快照源：'auto'(默认)=启动探测push2可用则实时否则delay；'realtime'=push2实时；'delay'=push2delay镜像
+    quoteSource: (options.quoteSource ?? env.EM_QUOTE_SOURCE ?? 'auto').toLowerCase(),
   };
+
+  // ---------- 实时源探测（auto 模式启动时执行一次） ----------
+  if (cfg.quoteSource === 'auto' || cfg.quoteSource === 'realtime') {
+    probeRealtimeHost()
+      .then((ok) => {
+        if (ok) {
+          setQuoteHost(EM_HOST.PUSH2);
+          console.log('[emClient] push2.eastmoney.com 实时源可达，已切换（竞价/快照走实时）');
+        } else {
+          setQuoteHost(EM_HOST.PUSH2_DELAY);
+          console.log('[emClient] push2.eastmoney.com 不可达，保持 push2delay 延迟镜像（竞价兜底走腾讯）');
+        }
+      })
+      .catch(() => {
+        setQuoteHost(EM_HOST.PUSH2_DELAY);
+      });
+  }
 
   const limiter = createRateLimiter({
     qps: cfg.qps,
@@ -332,6 +379,8 @@ export function createEmClient(options = {}) {
       } catch (e) {
         lastErr = e;
         stats.totalMs += Date.now() - started;
+        // 通知 httpAgent：当前活动代理疑似失效（无代理池时 no-op，零影响）
+        reportFailure(CHANNEL);
         if (!retriable(e) || attempt === cfg.retries) break;
       }
     }
@@ -512,6 +561,100 @@ export function createEmClient(options = {}) {
     if (bars.length === 0) return null;
 
     return { code, secid: symbol, name: null, klt, fqt, bars, source: 'tencent' };
+  }
+
+  /** 6 位裸码 → 腾讯行情代码前缀（沪 60/68/9 + 场内ETF 51/56/58=sh；北交 4/8=bj；深 0/2/3 + 159/16=sz） */
+  function toTencentSymbol(code) {
+    if (/^(60|68|9|51|56|58)/.test(code)) return `sh${code}`;
+    if (/^(4|8)/.test(code)) return `bj${code}`;
+    return `sz${code}`;
+  }
+
+  /** 北京时间 yyyy-MM-dd（不依赖运行环境时区） */
+  function beijingTodayStr() {
+    return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+
+  /**
+   * 腾讯公开行情批量报价兜底（qt.gtimg.cn，免 KEY，与 sectorQuoteService 同源，服务端直连可用）。
+   * 东财被 IP 封禁 / 熔断 / 超时 → 用腾讯实时报价补位 A 股 / 场内 ETF 的 close/pre_close/pct_chg/volume/amount。
+   * 字段（v_xxx 分号分隔）：p[3]=现价 p[4]=昨收 p[5]=今开 p[32]=涨跌幅(%) p[33]=最高 p[34]=最低
+   *                         p[36]=成交量(手) p[37]=成交额(万元→×10000 转元)
+   * @param {string[]} codes 6 位裸码数组
+   * @returns {Promise<object[]>} 归一化报价（失败项缺席，不填充假值）；整段失败返回 []
+   */
+  async function fetchQuotesTencent(codes) {
+    const list = Array.isArray(codes) ? codes : [];
+    const valid = [];
+    const seen = new Set();
+    for (const item of list) {
+      const c = tryNormalizeCode(item);
+      if (c && !seen.has(c)) { seen.add(c); valid.push(c); }
+    }
+    if (!valid.length) return [];
+
+    const url = `https://qt.gtimg.cn/q=${valid.map((c) => toTencentSymbol(c)).join(',')}`;
+    let buf = '';
+    try {
+      buf = await new Promise((resolve) => {
+        const req = https.get(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          timeout: 6000,
+        }, (res) => {
+          let d = '';
+          res.on('data', (c) => { d += c; });
+          res.on('end', () => resolve(d));
+        });
+        req.on('error', () => resolve(''));
+        req.on('timeout', () => { req.destroy(); resolve(''); });
+        setTimeout(() => { try { req.destroy(); } catch { /* noop */ } resolve(''); }, 8000);
+      });
+    } catch {
+      return [];
+    }
+    if (!buf) return [];
+
+    const today = beijingTodayStr();
+    const out = [];
+    for (const line of buf.split(';')) {
+      const m = line.match(/v_(\w+)="([^"]*)"/);
+      if (!m) continue;
+      const [, varName, payload] = m;
+      const p = payload.split('~');
+      if (p.length < 35) continue;
+      const code = tryNormalizeCode(varName.replace(/^(sh|sz|bj)/i, ''));
+      if (!code) continue;
+      const close = toNum(p[3]);
+      const preClose = toNum(p[4]);
+      if (close == null && preClose == null) continue;
+      const amountWan = toNum(p[37]);
+      out.push({
+        code,
+        name: null,
+        type: undefined,
+        market: undefined,
+        sector: null,
+        industry: null,
+        close,
+        pre_close: preClose,
+        open: toNum(p[5]),
+        high: toNum(p[33]),
+        low: toNum(p[34]),
+        pct_chg: toNum(p[32]),
+        turnover_rate: null,
+        volume_ratio: null,
+        amount: amountWan != null ? amountWan * 10000 : null,
+        volume: toNum(p[36]),
+        circ_mv: null,
+        total_mv: null,
+        pe_ttm: null,
+        pb: null,
+        trade_date: today,
+        data_origin: 'real',
+        source: 'tencent',
+      });
+    }
+    return out;
   }
 
   /**
@@ -743,6 +886,7 @@ export function createEmClient(options = {}) {
 
     fetchQuote,
     fetchQuotes,
+    fetchQuotesTencent,
     fetchKline,
     fetchList,
     fetchSectors,

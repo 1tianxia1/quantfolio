@@ -216,6 +216,25 @@ CREATE TABLE IF NOT EXISTS fund_nav (
 );
 CREATE INDEX IF NOT EXISTS idx_fn_code_date ON fund_nav(code, nav_date DESC);
 
+-- 10.5) 场外基金盘中估值（来自天天基金 fundgz JSONP，由前端浏览器采集后推送）
+--       gsz=估算净值，gszzl=估算涨跌幅(%)，gztime=估值时间，dwjz=最新官方单位净值，jzrq=官方净值日期
+--       与 fund_nav 解耦：fund_nav 存官方披露净值（T-1/当晚披露），fund_estimate 存当日盘中估值（盘中每分刷新）
+--       估值优先级：当日有估值且官方今日净值尚未披露 → 用估值；官方今日净值落地后 → 用真实净值
+CREATE TABLE IF NOT EXISTS fund_estimate (
+  code        TEXT NOT NULL,
+  est_date    TEXT NOT NULL,
+  gsz         REAL,
+  gszzl       REAL,
+  gztime      TEXT,
+  dwjz        REAL,
+  jzrq        TEXT,
+  data_origin TEXT NOT NULL DEFAULT 'estimate',
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (code, est_date),
+  FOREIGN KEY (code) REFERENCES securities(code)
+);
+CREATE INDEX IF NOT EXISTS idx_fe_code_date ON fund_estimate(code, est_date DESC);
+
 -- 11) 目标配置（同一 dimension 下 Σtarget_pct=100，应用层校验）
 CREATE TABLE IF NOT EXISTS target_allocations (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -397,5 +416,15 @@ export function initSchema(db) {
     }
   } catch (e) {
     console.warn('[schema] watchlist 1.3 迁移跳过:', e.message);
+  }
+
+  // 1.4 场外基金估值表：fund_estimate 增加 data_origin 列（estimate=fundgz 真盘中估值 / tencent=腾讯财经兜底）
+  try {
+    const fcols = db.all("PRAGMA table_info(fund_estimate)");
+    if (!fcols.some((c) => c.name === 'data_origin')) {
+      db.exec(`ALTER TABLE fund_estimate ADD COLUMN data_origin TEXT NOT NULL DEFAULT 'estimate'`);
+    }
+  } catch (e) {
+    console.warn('[schema] fund_estimate.data_origin 迁移跳过:', e.message);
   }
 }

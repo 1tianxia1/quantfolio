@@ -13,6 +13,7 @@ import BalanceIcon from '@mui/icons-material/Balance';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import SummaryCards from '../components/portfolio/SummaryCards';
 import HoldingsTable from '../components/portfolio/HoldingsTable';
+import FundLiveStatus from '../components/portfolio/FundLiveStatus';
 import HoldingsFilter, { DEFAULT_FILTERS, matchesFilters, type HoldingsFilters } from '../components/portfolio/HoldingsFilter';
 import AllocationPanel from '../components/portfolio/AllocationPanel';
 import RebalancePanel from '../components/portfolio/RebalancePanel';
@@ -27,6 +28,7 @@ import PageHeader from '../components/common/PageHeader';
 import SectionCard from '../components/common/SectionCard';
 import { useSnackbar } from '../components/common/SnackbarProvider';
 import { portfolioApi, type Holding, type PortfolioSummary, type RebalanceResult } from '../api/portfolio';
+import { collectFundEstimates, pushFundEstimates } from '../api/fundEstimate';
 import { aiApi } from '../api/ai';
 import { useAuthStore } from '../store/authStore';
 import { useAiConfigStore } from '../store/aiConfigStore';
@@ -57,6 +59,9 @@ export default function PortfolioDashboard() {
   const [targetOpen, setTargetOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Holding | null>(null);
   const [filters, setFilters] = useState<HoldingsFilters>(DEFAULT_FILTERS);
+  // 场外基金估值采集状态（供实时状态条展示）
+  const [fundCollectAt, setFundCollectAt] = useState<number | null>(null);
+  const [fundCollecting, setFundCollecting] = useState(false);
 
   const loadSummary = useCallback(async (dim?: string, silent?: boolean) => {
     if (!silent) setLoading(true);
@@ -147,6 +152,34 @@ export default function PortfolioDashboard() {
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [loadSummary]);
+
+  // 场外基金盘中估值采集：浏览器侧 JSONP 拉 fundgz（服务端被反爬），节流 55s 推回后端
+  // 依赖 summary 变化触发（每 15s 静默轮询会刷新 summary），但内部节流避免频繁打东财
+  const lastFundCollectRef = useRef(0);
+  useEffect(() => {
+    if (!summary?.holdings?.length) return;
+    const codes = [...new Set(summary.holdings.filter((h) => h.asset_class === 'fund' && h.code).map((h) => h.code!))];
+    if (!codes.length) return;
+    const now = Date.now();
+    if (now - lastFundCollectRef.current < 55_000) return;
+    lastFundCollectRef.current = now;
+    setFundCollecting(true);
+    (async () => {
+      try {
+        const ests = await collectFundEstimates(codes);
+        if (ests.length) {
+          await pushFundEstimates(ests).catch(() => undefined);
+          // 估值落库后静默刷新一次，让"估"标签与实时盈亏立即生效
+          loadSummary(dimensionRef.current, true);
+        }
+      } catch {
+        /* 估值采集失败不影响主流程 */
+      } finally {
+        setFundCollecting(false);
+        setFundCollectAt(Date.now());
+      }
+    })();
+  }, [summary, loadSummary]);
 
   // 维度切换联动
   const changeDimension = (dim: string) => {
@@ -250,6 +283,24 @@ export default function PortfolioDashboard() {
     [summary?.holdings, filters],
   );
 
+  // 场外基金净值时效提示：若存在 fund 持仓且其净值日期不是今天（无盘中估值），提示 T-1 披露机制
+  const fundStaleHint = useMemo(() => {
+    if (!summary?.holdings?.length) return null;
+    const funds = summary.holdings.filter((h) => h.asset_class === 'fund');
+    if (!funds.length) return null;
+    const hasLive = funds.some((h) => h.data_origin === 'mixed' || h.data_origin === 'estimate' || isTodayFund(h.quote_date));
+    if (hasLive) return null;
+    const dates = [...new Set(funds.map((h) => h.quote_date).filter(Boolean))].sort();
+    const latest = dates[dates.length - 1];
+    return latest;
+  }, [summary?.holdings]);
+
+  function isTodayFund(dateStr?: string | null): boolean {
+    if (!dateStr) return false;
+    const now = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+    return dateStr === now;
+  }
+
   return (
     <Box>
       <PageHeader
@@ -284,6 +335,17 @@ export default function PortfolioDashboard() {
         <Loading rows={8} />
       ) : summary ? (
         <>
+          {fundStaleHint && (
+            <Alert severity="info" sx={{ mb: 2 }} onClose={() => undefined}>
+              场外基金（联接/QDII/LOF）净值按 T-1 披露：白天 15:00 收盘后至当晚官方净值公布前，显示的是上一披露日（{fundStaleHint}）的盈亏，非实时。交易日盘中 09:30–15:00 会切换为实时估算净值（绿标"估"）。
+            </Alert>
+          )}
+
+          <FundLiveStatus
+            holdings={summary.holdings}
+            lastCollectAt={fundCollectAt}
+            collecting={fundCollecting}
+          />
           <SummaryCards summary={summary} />
 
           <Grid container spacing={2} sx={{ mt: 0.5 }}>

@@ -74,9 +74,28 @@ export function createPipelineService(db) {
     const funnel = [];
     const hits = new Map(); // code -> Set(步骤标签)
 
+    // 起点：全市场有行情数据的标的池（点击漏斗条可查看该阶段明细表格）
+    funnel.push({
+      step_id: 'start',
+      label: '全市场（有行情数据）',
+      survivors: pool.length,
+      eliminated: 0,
+      missing: 0,
+      top_reasons: [],
+      ...enrichRows(pool, snapByCode),
+    });
+
     for (const step of configs) {
       if (!step.enabled) {
-        funnel.push({ step_id: step.id, label: step.label, survivors: pool.length, eliminated: 0, missing: 0, top_reasons: [] });
+        funnel.push({
+          step_id: step.id,
+          label: step.label,
+          survivors: pool.length,
+          eliminated: 0,
+          missing: 0,
+          top_reasons: [],
+          ...enrichRows(pool, snapByCode),
+        });
         continue;
       }
       // 排名型步骤（取 TopN）与硬过滤步骤分开处理
@@ -113,6 +132,8 @@ export function createPipelineService(db) {
         // D1/D6：本步中因「字段缺失」被淘汰的数量（区别于规则不满足）
         missing: reasons.filter((r) => /缺失/.test(r.reason)).length,
         top_reasons: topReasons,
+        // 本阶段存活标的明细（点击漏斗条在对话框中查看）
+        ...enrichRows(pass, snapByCode),
       });
       pool = pass;
       if (pool.length === 0) break; // 提前终止
@@ -392,4 +413,33 @@ function pickMetrics(snap) {
     kdj_j: snap.kdj_j,
     first_trade_vol_ratio: snap.first_trade_vol_ratio,
   };
+}
+
+// ================= 漏斗阶段明细 =================
+/**
+ * 把某阶段的存活 code 列表富化为可展示行（供前端点击漏斗条弹表格）。
+ * 仅取 snapshot 中的轻量字段，避免把全市场数千行全量塞进响应。
+ * @param {string[]} codes 本阶段存活代码
+ * @param {Map<string, object>} snapByCode code → 快照
+ * @param {number} [limit=500] 单阶段最多返回行数（超出截断并标注）
+ * @returns {{ rows: object[], rows_total: number, rows_truncated: boolean }}
+ */
+function enrichRows(codes, snapByCode, limit = 500) {
+  const total = codes.length;
+  const rows = codes.slice(0, limit).map((c) => {
+    const s = snapByCode.get(c) || {};
+    return {
+      code: c,
+      name: s.name || c,
+      price: s.price ?? null,
+      pct_chg: s.pct_chg ?? null,
+      turnover_rate: s.turnover_rate ?? null,
+      volume_ratio: s.volume_ratio ?? null,
+      vol_ratio_5: s.vol_ratio_5 ?? null,
+      volume_streak: s.volume_streak ?? 0,
+      circ_mv: s.circ_mv ?? null,
+      ma_bullish: s.ma_bullish ?? 0,
+    };
+  });
+  return { rows, rows_total: total, rows_truncated: total > limit };
 }

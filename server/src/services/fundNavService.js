@@ -63,7 +63,7 @@ export function createFundNavService(db) {
       codes = rows.map((r) => r.code);
     }
     const list = [...new Set(codes.map(tryNormalizeCode).filter(Boolean))];
-    const summary = { total: list.length, synced: 0, skipped: 0, failed: 0, failures: [] };
+    const summary = { total: list.length, synced: 0, skipped: 0, failed: 0, estimate: 0, failures: [] };
     if (list.length === 0) return summary;
 
     // 跳过已有上市行情（场内 ETF）：它们走 daily_quotes 市价口径，无需净值
@@ -104,6 +104,7 @@ export function createFundNavService(db) {
           n.is_estimate ? 'mixed' : 'real',
         ]);
         summary.synced += 1;
+        if (n.is_estimate) summary.estimate += 1;
       } catch (e) {
         summary.failed += 1;
         summary.failures.push({ code, reason: e.message });

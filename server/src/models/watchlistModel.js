@@ -41,6 +41,8 @@ export function createWatchlistModel(db) {
     },
 
     // ---------- 自选列表（含最新行情） ----------
+    // opts.category: 'a_share' | 'fund' | 省略（不过滤）
+    // opts.groupId: 数字=指定组; null=未分组（IS NULL）; 省略=不过滤
     list(userId, { category, groupId } = {}) {
       const where = ['w.user_id = ?'];
       const params = [userId];
@@ -48,9 +50,15 @@ export function createWatchlistModel(db) {
         where.push('w.category = ?');
         params.push(category);
       }
-      if (groupId != null) {
-        where.push('(w.group_id = ? OR (w.group_id IS NULL AND ? = 1))');
-        params.push(groupId, groupId == null ? 1 : 0);
+      if (groupId !== undefined) {
+        if (groupId === null) {
+          // 仅「未分组」
+          where.push('w.group_id IS NULL');
+        } else {
+          // 指定分组，并把未分组合并进该组（与历史行为兼容）
+          where.push('(w.group_id = ? OR w.group_id IS NULL)');
+          params.push(groupId);
+        }
       }
       return db.all(
         `SELECT w.id, w.user_id, w.code, w.group_id, w.note, w.created_at,

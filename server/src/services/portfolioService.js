@@ -33,6 +33,7 @@ export function createPortfolioService(db) {
       .filter((h) => h.asset_class === ASSET_CLASS.FUND && h.code)
       .map((h) => h.code);
     const fundNavMap = new Map(model.getFundNav(fundCodes).map((f) => [f.code, f]));
+    const fundEstMap = new Map(model.getFundEstimate(fundCodes).map((f) => [f.code, f]));
     const fundQuoteMap = new Map(
       fundCodes
         .map((c) => [c, model.getLatestQuote(c)])
@@ -98,6 +99,130 @@ export function createPortfolioService(db) {
       //   3) 兜底（图片导入金额模型 / 暂未同步净值）：current_price=1，当日盈亏置 0
       if (h.asset_class === ASSET_CLASS.FUND) {
         const fn = fundNavMap.get(h.code);
+        const est = fundEstMap.get(h.code);
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const estIsToday = est && est.est_date === todayStr
+          && Number.isFinite(Number(est.gsz)) && Number(est.gsz) > 0;
+        const officialIsToday = fn && fn.nav_date === todayStr && !fn.is_estimate;
+        // ★ 当日盘中估值优先：当日有估值且官方今日净值尚未披露（收盘后至当晚净值公布前）
+        //   → 用 gsz 作为现价、gszzl 作为当日盈亏率，实现"实时当日收益"。
+        //   官方今日净值（is_estimate=0, nav_date=今日）落地后自动让位给真实净值。
+        const useEst = estIsToday && !officialIsToday && !fundQuoteMap.has(h.code);
+        if (useEst) {
+          const currentPrice = Number(est.gsz);
+          const dwjz = Number.isFinite(Number(est.dwjz)) && Number(est.dwjz) > 0 ? Number(est.dwjz) : currentPrice;
+          const marketValue = h.quantity * currentPrice;
+          const costAmount = h.quantity * h.cost_price;
+          const profit = marketValue - costAmount;
+          const profitRate = costAmount ? (profit / costAmount) * 100 : 0;
+          const hDayProfit = h.quantity * (currentPrice - dwjz);
+          const hDayProfitRate = Number.isFinite(Number(est.gszzl))
+            ? Number(est.gszzl)
+            : (dwjz ? (currentPrice - dwjz) / dwjz * 100 : null);
+          totalAsset += marketValue;
+          totalCost += costAmount;
+          dayProfit += hDayProfit;
+          return {
+            ...h,
+            current_price: round4(currentPrice),
+            market_value: round4(marketValue),
+            cost_amount: round4(costAmount),
+            profit: round4(profit),
+            profit_rate: round4(profitRate),
+            day_profit: round4(hDayProfit),
+            day_profit_rate: round4(hDayProfitRate),
+            current_pct: 0,
+            target_pct: null,
+            deviation_pct: null,
+            deviation_ratio: null,
+            industry: null,
+            sector: null,
+            quote_date: est.gztime || est.est_date,
+            estimate_time: est.gztime || null,
+            data_origin: 'estimate',
+          };
+        }
+        // ★ 关联板块指数兜底（sector）：基金跟踪的板块/指数今日实时涨跌幅
+        //   当日盈亏率 = 板块今日涨跌幅（预估），当日盈亏 = 市值 × 板块涨跌幅
+        //   （养基宝"关联板块"同款口径；fundgz 不可用时仍能给今日方向与量级）
+        if (
+          est && est.est_date === todayStr && est.data_origin === 'sector'
+          && Number.isFinite(Number(est.gszzl))
+          && !fundQuoteMap.has(h.code)
+        ) {
+          // 现价用最新官方净值（T-1 或 fund_nav 最新），保持"现价如实"
+          const basePrice = (Number.isFinite(Number(est.dwjz)) && Number(est.dwjz) > 0)
+            ? Number(est.dwjz)
+            : (fn && Number.isFinite(Number(fn.nav)) && Number(fn.nav) > 0 ? Number(fn.nav) : h.cost_price);
+          const marketValue = h.quantity * basePrice;
+          const costAmount = h.quantity * h.cost_price;
+          const profit = marketValue - costAmount;
+          const profitRate = costAmount ? (profit / costAmount) * 100 : 0;
+          const sectorPct = Number(est.gszzl);
+          const hDayProfit = marketValue * (sectorPct / 100);
+          totalAsset += marketValue;
+          totalCost += costAmount;
+          dayProfit += hDayProfit;
+          return {
+            ...h,
+            current_price: round4(basePrice),
+            market_value: round4(marketValue),
+            cost_amount: round4(costAmount),
+            profit: round4(profit),
+            profit_rate: round4(profitRate),
+            day_profit: round4(hDayProfit),
+            day_profit_rate: round4(sectorPct),
+            current_pct: 0,
+            target_pct: null,
+            deviation_pct: null,
+            deviation_ratio: null,
+            industry: null,
+            sector: null,
+            quote_date: est.jzrq || est.est_date,
+            estimate_time: null,
+            data_origin: 'sector',
+          };
+        }
+        // ★ 腾讯兜底：fundgz 完全失败时，前端采集 qt.gtimg.cn 入库此分支
+        //   字段：dwjz=T-1 官方单位净值，gszzl=T-1 涨跌幅(%)，jzrq=T-1
+        //   注意：Tencent 的 gszzl 是 T-1 当日涨跌，**不能**用作今日估值（今天实际可能 +1.10% 而 T-1 是 -4.14%）。
+        //   因此兜底只算累计盈亏（基于 dwjez 当现价），当日盈亏置 null — 如实显示"无今日估值"。
+        if (
+          est && est.est_date === todayStr && est.data_origin === 'tencent'
+          && Number.isFinite(Number(est.dwjz)) && Number(est.dwjz) > 0
+          && !fundQuoteMap.has(h.code)
+        ) {
+          const currentPrice = Number(est.dwjz);
+          const marketValue = h.quantity * currentPrice;
+          const costAmount = h.quantity * h.cost_price;
+          const profit = marketValue - costAmount;
+          const profitRate = costAmount ? (profit / costAmount) * 100 : 0;
+          // 当日盈亏 = null：Tencent gszzl 是 T-1 的，不能当今日估值（避免误用昨日涨跌做今日盈亏）
+          const hDayProfit = null;
+          const hDayProfitRate = null;
+          totalAsset += marketValue;
+          totalCost += costAmount;
+          // dayProfit 不累加 tencent 行（hDayProfit=null）
+          return {
+            ...h,
+            current_price: round4(currentPrice),
+            market_value: round4(marketValue),
+            cost_amount: round4(costAmount),
+            profit: round4(profit),
+            profit_rate: round4(profitRate),
+            day_profit: null,
+            day_profit_rate: null,
+            current_pct: 0,
+            target_pct: null,
+            deviation_pct: null,
+            deviation_ratio: null,
+            industry: null,
+            sector: null,
+            quote_date: est.jzrq || est.est_date,
+            estimate_time: null,
+            data_origin: 'tencent',
+          };
+        }
         if (fn && Number.isFinite(fn.nav) && fn.nav > 0) {
           const currentPrice = fn.nav;
           const marketValue = h.quantity * currentPrice;

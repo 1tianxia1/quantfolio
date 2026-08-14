@@ -164,6 +164,58 @@ export function createSecurityModel(db) {
       ).sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
     },
 
+    // ---------- fund_estimate（场外基金当日盘中估值，取每个代码最新 est_date） ----------
+    getFundEstimate(codes) {
+      if (!codes || codes.length === 0) return [];
+      return selectByCodes(db, codes, (ph) =>
+        `SELECT fe.code, fe.est_date, fe.gsz, fe.gszzl, fe.gztime, fe.dwjz, fe.jzrq, fe.data_origin, fe.updated_at
+         FROM fund_estimate fe
+         WHERE fe.code IN (${ph})
+           AND fe.est_date = (SELECT MAX(est_date) FROM fund_estimate WHERE code = fe.code)`,
+      ).sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+    },
+
+    // 批量 upsert 当日盘中估值（前端 JSONP 采集后推送）。fresh 优先，旧值被覆盖。
+    // data_origin: 'estimate' = fundgz 真盘中估值（覆盖） / 'tencent' = 腾讯财经兜底（T-1，**不覆盖**已存在的 estimate/sector 行）
+    // 优先级：estimate(fundgz 今日估值) > sector(关联板块今日涨跌) > tencent(T-1 兜底)
+    saveFundEstimates(rows) {
+      const sqlUpsert =
+        `INSERT INTO fund_estimate (code, est_date, gsz, gszzl, gztime, dwjz, jzrq, data_origin, updated_at) ` +
+        `VALUES (?,?,?,?,?,?,?,?,?) ` +
+        `ON CONFLICT(code, est_date) DO UPDATE SET ` +
+        `gsz=excluded.gsz, gszzl=excluded.gszzl, gztime=excluded.gztime, ` +
+        `dwjz=excluded.dwjz, jzrq=excluded.jzrq, data_origin=excluded.data_origin, ` +
+        `updated_at=excluded.updated_at`;
+      // tencent 兜底行：已有今日行（estimate/sector）时不覆盖——T-1 数据不能覆盖今日板块预估
+      const sqlIgnore =
+        `INSERT INTO fund_estimate (code, est_date, gsz, gszzl, gztime, dwjz, jzrq, data_origin, updated_at) ` +
+        `VALUES (?,?,?,?,?,?,?,?,?) ` +
+        `ON CONFLICT(code, est_date) DO NOTHING`;
+      const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      // null 透传 null（Number(null)=0 会污染 gsz 字段）
+      const n = (v) => (v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+      const saved = [];
+      for (const r of rows || []) {
+        if (!r || !r.code) continue;
+        const estDate = (r.gztime && r.gztime.slice(0, 10)) || r.est_date || now.slice(0, 10);
+        const origin = r.data_origin === 'tencent' ? 'tencent' : 'estimate';
+        const stmt = origin === 'tencent' ? sqlIgnore : sqlUpsert;
+        db.run(stmt, [
+          String(r.code),
+          estDate,
+          n(r.gsz),
+          n(r.gszzl),
+          r.gztime || null,
+          n(r.dwjz),
+          r.jzrq || null,
+          origin,
+          now,
+        ]);
+        saved.push(String(r.code));
+      }
+      return saved;
+    },
+
     // ---------- tech_indicators ----------
     getLatestIndicators(codes) {
       if (!codes || codes.length === 0) return [];

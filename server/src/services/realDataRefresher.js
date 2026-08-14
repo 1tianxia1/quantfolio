@@ -23,7 +23,6 @@
 import { createQuoteSyncService } from './quoteSyncService.js';
 import { deriveFields } from '../seed/derivedFields.js';
 import { seedIndicators } from '../seed/indicators.js';
-import { seedMoneyFlow, seedAuctionData } from '../seed/moneyFlow.js';
 import { seedLimitRecords } from '../seed/limitRecords.js';
 import { seedHotSectors } from '../seed/hotSectors.js';
 
@@ -192,12 +191,12 @@ export async function refreshRealData(db, options = {}) {
   const tInd = Date.now();
   log(`tech_indicators 重算完成，耗时 ${((tInd - tBars) / 1000).toFixed(1)}s`);
 
-  seedMoneyFlow(db, stockItems, barsByCode);
-  seedAuctionData(db, items, barsByCode);
+  // seedMoneyFlow / seedAuctionData 已移至 marketScheduler（竞价/资金流走真实接口）
+  // seedLimitRecords / seedHotSectors 保持不变
   const limitStat = seedLimitRecords(db, items, barsByCode);
   seedHotSectors(db, barsByCode);
   const tDerive = Date.now();
-  log(`money_flow / auction_data / limit_records / hot_sectors 重算完成，`
+  log(`limit_records / hot_sectors 重算完成，`
     + `耗时 ${((tDerive - tInd) / 1000).toFixed(1)}s`
     + `（涨停记录：真实 ${limitStat?.realCount ?? 0} 条 + 派生 ${limitStat?.derivedCount ?? 0} 条）`);
 

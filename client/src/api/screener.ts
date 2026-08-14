@@ -31,6 +31,19 @@ export interface ScreenerResult {
   data_origin: string;
 }
 
+export interface FunnelRow {
+  code: string;
+  name: string;
+  price: number | null;
+  pct_chg: number | null;
+  turnover_rate: number | null;
+  volume_ratio: number | null;
+  vol_ratio_5: number | null;
+  volume_streak: number;
+  circ_mv: number | null;
+  ma_bullish: number;
+}
+
 export interface PipelineFunnelStep {
   step_id: string;
   label: string;
@@ -39,6 +52,12 @@ export interface PipelineFunnelStep {
   /** 本步中因「字段缺失」被淘汰的数量（区别于规则不满足） */
   missing?: number;
   top_reasons: { reason: string; count: number }[];
+  /** 本阶段存活标的明细（点击漏斗条在对话框中查看） */
+  rows?: FunnelRow[] | null;
+  /** 本阶段存活标的总数（rows 可能被截断） */
+  rows_total?: number;
+  /** rows 是否被截断（仅展示前 N 只） */
+  rows_truncated?: boolean;
 }
 
 export interface PipelineResult {

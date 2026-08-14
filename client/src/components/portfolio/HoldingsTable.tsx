@@ -1,13 +1,69 @@
 // ============================================================
 // HoldingsTable：持仓明细表（可排序）
 // ============================================================
-import { Box, IconButton, Typography } from '@mui/material';
+import { Box, IconButton, Typography, Tooltip, Chip } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DataTable, { ColumnDef } from '../common/DataTable';
 import { formatMoney, formatQuantity, formatPercent, colorOf, formatSignedMoney } from '../../utils/format';
 import { ASSET_CLASS_LABEL } from '@shared/constants';
 import type { Holding } from '../../api/portfolio';
+
+/** 判断净值/行情日期是否为今天（北京时间） */
+function isToday(dateStr?: string | null): boolean {
+  if (!dateStr) return false;
+  const now = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+  return dateStr === now;
+}
+
+/**
+ * 场外基金净值时效标签：
+ * - 盘中实时估值（data_origin=mixed/estimate）→ 绿底"估"字 + 估值时间
+ * - 官方净值且为今天 → 蓝底"今"
+ * - 官方净值且非今天（T-1 披露）→ 灰底"昨" + 具体日期 tooltip
+ */
+function FundNavBadge({ h }: { h: Holding }) {
+  if (h.asset_class !== 'fund') return null;
+  if (h.data_origin === 'mixed' || h.data_origin === 'estimate') {
+    const t = h.estimate_time || h.quote_date;
+    const suffix = h.data_origin === 'estimate' ? '（浏览器实时估值）' : '';
+    return (
+      <Tooltip title={`盘中实时估值 · ${t ?? '未知'}${suffix}`}>
+        <Chip size="small" label="估" color="success" sx={{ height: 18, fontSize: 11, ml: 0.5 }} />
+      </Tooltip>
+    );
+  }
+  // 关联板块指数兜底：fundgz 不可用时，用基金跟踪板块/指数今日涨跌幅预估当日盈亏
+  if (h.data_origin === 'sector') {
+    return (
+      <Tooltip title={`关联板块预估 · 当日盈亏率=板块今日涨跌幅（fundgz 暂不可用时的近似估值）`}>
+        <Chip size="small" label="板" color="secondary" sx={{ height: 18, fontSize: 11, ml: 0.5 }} />
+      </Tooltip>
+    );
+  }
+  // 腾讯兜底：fundgz 完全不可用时显示 T-1 官方净值（无今日估值，day_profit=null）
+  // 注意：Tencent 的 gszzl 是 T-1 的涨跌幅，**不能**当作今日盈亏率（避免用昨日涨跌冒充今日）
+  if (h.data_origin === 'tencent') {
+    return (
+      <Tooltip title={`腾讯兜底 · 累计基于 ${h.quote_date ?? '未知'} 官方净值；今日盘中估值暂不可用，当日盈亏暂不显示`}>
+        <Chip size="small" label="兜" color="warning" sx={{ height: 18, fontSize: 11, ml: 0.5 }} />
+      </Tooltip>
+    );
+  }
+  const today = isToday(h.quote_date);
+  if (today) {
+    return (
+      <Tooltip title={`今日官方净值 · ${h.quote_date}`}>
+        <Chip size="small" label="今" color="primary" sx={{ height: 18, fontSize: 11, ml: 0.5 }} />
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip title={`净值 T-1 披露 · 数据日期 ${h.quote_date ?? '未知'}（收盘后至当晚公布前仅显示上一披露日）`}>
+      <Chip size="small" label="昨" sx={{ height: 18, fontSize: 11, ml: 0.5, bgcolor: 'action.hover' }} />
+    </Tooltip>
+  );
+}
 
 interface HoldingsTableProps {
   holdings: Holding[];
@@ -26,7 +82,7 @@ export default function HoldingsTable({ holdings, onEdit, onDelete }: HoldingsTa
     },
     { key: 'quantity', label: '数量', align: 'right', sortable: true, getSortValue: (h) => h.quantity, render: (h) => (h.asset_class === 'cash' ? '—' : formatQuantity(h.quantity)) },
     { key: 'cost_price', label: '成本价', align: 'right', sortable: true, getSortValue: (h) => h.cost_price, render: (h) => (h.asset_class === 'cash' ? '—' : formatMoney(h.cost_price, 4)) },
-    { key: 'current_price', label: '现价', align: 'right', sortable: true, getSortValue: (h) => h.current_price, render: (h) => (h.asset_class === 'cash' ? '—' : formatMoney(h.current_price)) },
+    { key: 'current_price', label: '现价', align: 'right', sortable: true, getSortValue: (h) => h.current_price, render: (h) => (h.asset_class === 'cash' ? '—' : <Box sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end' }}>{formatMoney(h.current_price)}<FundNavBadge h={h} /></Box>) },
     { key: 'market_value', label: '市值', align: 'right', sortable: true, getSortValue: (h) => h.market_value, render: (h) => `¥${formatMoney(h.market_value)}` },
     // 盈亏类字段统一 4 位小数：2 位会把 0.7341% 抹成 0.73%，与券商对不上
     { key: 'profit', label: '累计盈亏', align: 'right', sortable: true, getSortValue: (h) => h.profit, render: (h) => (h.asset_class === 'cash' ? '—' : <Typography variant="body2" sx={{ color: colorOf(h.profit) }}>{formatSignedMoney(h.profit, 4)}</Typography>) },

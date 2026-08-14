@@ -104,7 +104,21 @@ export function createMarketRoutes(db) {
   router.get('/watchlist', optionalAuth, (req, res, next) => {
     try {
       const userId = req.user?.id ?? null;
-      res.json(ok(market.listWatchlist(userId), 'ok'));
+      // 读 query 参数（白名单）并透传给 model：
+      //   category ∈ {a_share, fund}   不传表示不过滤
+      //   groupId: 数字 / null / 'ungrouped'  不传或 'all' 表示不过滤
+      const opts = {};
+      const cat = String(req.query.category || '');
+      if (cat === 'a_share' || cat === 'fund') opts.category = cat;
+      const g = req.query.groupId;
+      if (g == null || g === '' || g === 'all') {
+        // 不传 groupId
+      } else if (g === 'ungrouped') {
+        opts.groupId = null;   // 约定：null 视作「按未分组过滤」
+      } else if (!Number.isNaN(Number(g))) {
+        opts.groupId = Number(g);
+      }
+      res.json(ok(market.listWatchlist(userId, opts), 'ok'));
     } catch (e) { next(e); }
   });
 
