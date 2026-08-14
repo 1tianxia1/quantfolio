@@ -52,3 +52,7 @@ DEPLOY_FIX_FUNNEL_MISSING_ID.patch
 *.patch
 *.bak
 .git-rewrite/
+
+# === 其他部署辅助文件：含 IP，勿提交 ===
+deploy_commands.txt
+quick_deploy.sh
