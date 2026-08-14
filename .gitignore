@@ -44,3 +44,11 @@ server/scripts/ths_feasibility_report_cookie.md
 server/scripts/ths_hexin_research*.mjs
 server/scripts/ths_hexin_research*_result.txt
 server/scripts/ths_live_*.js
+
+# === 本地临时 / 部署补丁产物：含服务器 IP，勿提交 ===
+apply_fix.py
+FIX_SUMMARY.md
+DEPLOY_FIX_FUNNEL_MISSING_ID.patch
+*.patch
+*.bak
+.git-rewrite/
