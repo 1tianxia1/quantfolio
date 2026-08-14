@@ -7,9 +7,8 @@ data/
 .DS_Store
 
 # === 部署相关：含生产机 IP / SSH 密码等明文，切勿提交到公开仓库 ===
-DEPLOY_*.md
-FINAL_DEPLOY.md
-QUICK_DEPLOY.md
+*DEPLOY*.md
+FIX_FUNNEL.md
 DEPLOY_README.md
 DEPLOY_NOW.md
 DEPLOY_GUIDE.md
